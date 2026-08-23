@@ -156,8 +156,8 @@
         <div class="card consent-paper-card">
           <ol class="consent-list">
             <li><strong>저장하는 것</strong>: 이름, 학년, 틀린 단어, 시험 점수 — 오답 복습에만 써요</li>
-            <li><strong>저장하지 않는 것</strong>: 시험지 사진(단어를 찾은 뒤 바로 없어져요), 연락처</li>
-            <li><strong>AI 사용</strong>: 사진에서 틀린 단어를 찾을 때 AI가 읽어요</li>
+            <li><strong>저장하지 않는 것</strong>: 시험지 사진(동그라미 앱은 AI 판독 직후 바로 버려요), 연락처</li>
+            <li><strong>AI 사용</strong>: Anthropic Claude API(미국)가 사진을 읽어요. Anthropic은 정책에 따라 악용 방지를 위해 요청 기록을 제한된 기간 보관할 수 있어요</li>
             <li><strong>언제든 삭제</strong>: 그만두면 선생님께 말씀해 주세요. 기록을 모두 지워 드려요</li>
           </ol>
         </div>
@@ -210,7 +210,7 @@
             <input class="sr-only" id="gallery-input" type="file" accept="image/*">
           </label>
         </div>
-        <p class="privacy-note privacy-center">사진은 판독에만 사용하고 저장하지 않아요</p>
+        <p class="privacy-note privacy-center">동그라미 앱은 사진을 판독 직후 폐기하며 저장하지 않아요</p>
         <p class="selected-file" id="selected-file" aria-live="polite"></p>
 
         <div class="card analysis-setup" id="analysis-setup" hidden>
