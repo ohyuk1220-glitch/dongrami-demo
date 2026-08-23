@@ -1544,7 +1544,7 @@
     var grade = gradeInput.value.trim();
 
     if (!nickname || nickname.length > 12) {
-      message.textContent = "별명은 1~12자로 입력해 주세요.";
+      message.textContent = "이름은 1~12자로 입력해 주세요.";
       nicknameInput.focus();
       return;
     }
