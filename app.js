@@ -553,7 +553,7 @@
     var quarterTurn = Math.abs(state.imageRotation % 180) === 90;
     var rotatedWidth = quarterTurn ? sourceHeight : sourceWidth;
     var rotatedHeight = quarterTurn ? sourceWidth : sourceHeight;
-    var scale = Math.min(1600 / Math.max(rotatedWidth, rotatedHeight), 1);
+    var scale = Math.min(2000 / Math.max(rotatedWidth, rotatedHeight), 1); // 2000px = 서버 상한. 1600에선 작은 세모(△)를 놓침 (2026-08-23 실측)
     canvas.width = Math.max(1, Math.round(rotatedWidth * scale));
     canvas.height = Math.max(1, Math.round(rotatedHeight * scale));
     canvas.hidden = false;
@@ -882,6 +882,7 @@
       var number = makeElement("div", "question-number", String(item.questionNo));
       var body = makeElement("div", "wrong-fields");
       var wordLabel = makeElement("label", "sr-only", "영어단어");
+      var wordField = makeElement("div", "word-field");
       var wordInput = makeElement("input", "word-input");
       var meaningLabel = makeElement("label", "sr-only", "한글 뜻");
       var meaningInput = makeElement("input", "meaning-input");
@@ -902,6 +903,10 @@
       wordInput.addEventListener("input", function () {
         updateWrongItem(index, "word", wordInput.value);
       });
+      wordField.appendChild(wordInput);
+      if (item.inferred === true) {
+        wordField.appendChild(makeElement("span", "inferred-badge", "추정 — 확인해 주세요"));
+      }
 
       meaningLabel.htmlFor = meaningId;
       meaningInput.id = meaningId;
@@ -936,7 +941,7 @@
         actions.append(markLabel, markSelect);
       }
       actions.appendChild(exclude);
-      body.append(wordLabel, wordInput, meaningLabel, meaningInput, actions);
+      body.append(wordLabel, wordField, meaningLabel, meaningInput, actions);
       row.append(number, body);
       fragment.appendChild(row);
     });

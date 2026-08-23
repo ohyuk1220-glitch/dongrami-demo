@@ -260,9 +260,10 @@
               {
                 itemId: "mock-photo-item-11",
                 questionNo: 11,
-                word: "기억",
-                meaning: "memory",
-                mark: "wrong"
+                word: "memory",
+                meaning: "기억",
+                mark: "wrong",
+                inferred: true
               }
             ],
             detectedDate: todayString(),

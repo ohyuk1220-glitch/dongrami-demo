@@ -1400,6 +1400,32 @@ code {
   font-weight: 850;
 }
 
+.word-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.word-field .word-input {
+  min-width: 0;
+  flex: 1;
+}
+
+.inferred-badge {
+  display: inline-flex;
+  min-height: 24px;
+  flex: 0 0 auto;
+  align-items: center;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  padding: 3px 8px;
+  font-family: var(--font-hand);
+  font-size: .76rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
 .wrong-item-actions {
   display: flex;
   justify-content: flex-end;
