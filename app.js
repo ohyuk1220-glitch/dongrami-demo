@@ -1,5 +1,50 @@
-(function () {
+(async function () {
   "use strict";
+
+  var query = new URLSearchParams(window.location.search);
+  var apiBaseUrl = query.get("api");
+  var tenantSlug = query.get("t");
+  var adapter = apiBaseUrl && tenantSlug
+    ? new window.RewordAdapters.RealAdapter(apiBaseUrl, tenantSlug)
+    : new window.RewordAdapters.MockAdapter();
+
+  function mergeTenantTheme(configuration) {
+    var fallback = window.RewordTheme || {};
+    var remote = configuration && configuration.theme || {};
+    var remoteColors = remote.colors || {};
+    var colors = Object.assign({}, fallback.colors || {});
+    if (remoteColors.background) colors.bg = remoteColors.background;
+    if (remoteColors.ink) colors.ink = remoteColors.ink;
+    if (remoteColors.deepGreen) {
+      colors.accent = remoteColors.deepGreen;
+      colors.accentDeep = remoteColors.deepGreen;
+      colors.gradientStart = remoteColors.deepGreen;
+      colors.gradientEnd = remoteColors.deepGreen;
+    }
+    if (remoteColors.lightGreen) {
+      colors.accentSoft = remoteColors.lightGreen;
+      colors.accentLine = remoteColors.lightGreen;
+    }
+    if (remoteColors.olive) colors.oliveType = remoteColors.olive;
+    var logo = remote.logo;
+    return Object.assign({}, fallback, remote.copy || {}, {
+      brandName: remote.brandName || configuration.name || fallback.brandName || "",
+      logoImage: logo || fallback.logoImage,
+      logoImageFull: logo || fallback.logoImageFull,
+      colors: colors,
+      fonts: Object.assign({}, fallback.fonts || {}, remote.fonts || {})
+    });
+  }
+
+  if (adapter.isReal) {
+    try {
+      var publicConfiguration = await adapter.getPublicConfiguration();
+      window.RewordTheme = mergeTenantTheme(publicConfiguration);
+      window.RewordMask.setPresets(publicConfiguration.maskPresets);
+    } catch (error) {
+      console.warn("Tenant public configuration unavailable", error && error.code || "API_ERROR");
+    }
+  }
 
   function applyTheme() {
     // 다른 공부방용 theme.js에서 값을 빠뜨려도 "undefined" 노출·중단 없이 동작해야 한다
@@ -7,6 +52,7 @@
     var colors = theme.colors || {};
     var brandName = theme.brandName || "";
     var appName = theme.appName || "";
+    var fonts = theme.fonts || {};
     var colorVariables = {
       bg: "--bg",
       surface: "--surface",
@@ -33,6 +79,9 @@
         document.documentElement.style.setProperty(colorVariables[colorName], colors[colorName]);
       }
     });
+    if (fonts.sans) document.documentElement.style.setProperty("--font-sans", fonts.sans);
+    if (fonts.hand) document.documentElement.style.setProperty("--font-hand", fonts.hand);
+    if (fonts.pen) document.documentElement.style.setProperty("--font-pen", fonts.pen);
 
     document.querySelectorAll("[data-theme-slot]").forEach(function (element) {
       var slotName = element.dataset.themeSlot;
@@ -73,13 +122,6 @@
   }
 
   applyTheme();
-
-  var query = new URLSearchParams(window.location.search);
-  var apiBaseUrl = query.get("api");
-  var tenantSlug = query.get("t");
-  var adapter = apiBaseUrl && tenantSlug
-    ? new window.RewordAdapters.RealAdapter(apiBaseUrl, tenantSlug)
-    : new window.RewordAdapters.MockAdapter();
   var state = {
     role: null,
     currentUser: null,
@@ -126,6 +168,16 @@
       element.textContent = textValue;
     }
     return element;
+  }
+
+  function renderMaskPresetSelect() {
+    var select = byId("form-preset");
+    select.replaceChildren();
+    window.RewordMask.listPresets().forEach(function (preset) {
+      var option = makeElement("option", "", preset.label);
+      option.value = preset.id;
+      select.appendChild(option);
+    });
   }
 
   function makeButton(textValue, className, onClick) {
@@ -535,7 +587,12 @@
     if (preset === "netutor") {
       preset = "netutor-unit";
     }
-    byId("form-preset").value = preset;
+    var select = byId("form-preset");
+    var available = window.RewordMask.listPresets().map(function (item) { return item.id; });
+    if (!available.includes(preset)) {
+      preset = available.includes("other") ? "other" : available[0];
+    }
+    select.value = preset;
     state.maskRect = presetRect(preset);
     renderImageCanvas();
   }
@@ -711,15 +768,30 @@
     // 판독 중 로그아웃·재로그인하면 응답이 다른 학생 세션에 저장되는 것 방지
     var requestStudent = state.currentStudent;
 
+    function currentMask() {
+      if (!state.maskEnabled || !state.maskRect) {
+        return undefined;
+      }
+      var rect = window.RewordMask.clampRect(state.maskRect);
+      return {
+        presetId: byId("form-preset").value,
+        box: { x: rect.x, y: rect.y, w: rect.width, h: rect.height }
+      };
+    }
+
     try {
       var image = await preparedCanvasImage();
-      var analysis = await adapter.analyzeSheet(image, testId, requestStudent.id);
+      var mask = currentMask();
+      var analysis = await adapter.analyzeSheet(image, testId, requestStudent.id, { mask: mask });
+      if (mask) window.RewordMask.learnPreset(mask.presetId, state.maskRect);
       var rotation = correctionDegrees(analysis.orientation);
       if (analysis.hint === "ROTATE" && rotation && !state.rotationRetried) {
         state.rotationRetried = true;
         rotateImage(rotation);
         image = await preparedCanvasImage();
-        analysis = await adapter.analyzeSheet(image, testId, requestStudent.id);
+        mask = currentMask();
+        analysis = await adapter.analyzeSheet(image, testId, requestStudent.id, { mask: mask });
+        if (mask) window.RewordMask.learnPreset(mask.presetId, state.maskRect);
       }
       if (!state.currentStudent || state.currentStudent.id !== requestStudent.id) {
         return;
@@ -1923,6 +1995,7 @@
     });
   }
 
+  renderMaskPresetSelect();
   bindEvents();
   if (adapter.isReal) {
     byId("mode-badge").textContent = "API 모드";

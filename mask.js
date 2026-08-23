@@ -1,13 +1,15 @@
 (function (root) {
   "use strict";
 
-  var PRESETS = {
-    // Upright page-relative boxes measured from the masked real-sheet fixtures.
-    jihye: { x: 0.60, y: 0.146, width: 0.275, height: 0.054 },
-    "netutor-unit": { x: 0.49, y: 0.174, width: 0.155, height: 0.054 },
-    "netutor-wizard": { x: 0.65, y: 0.20, width: 0.21, height: 0.041 },
-    other: { x: 0.60, y: 0.13, width: 0.28, height: 0.07 }
-  };
+  // API 설정을 못 받는 MockAdapter/오프라인 모드용 세 measured presets + generic fallback.
+  var FALLBACK_PRESETS = [
+    { id: "jihye", label: "지혜의영어 양식", box: { x: 0.60, y: 0.146, w: 0.275, h: 0.054 } },
+    { id: "netutor-unit", label: "NE Tutor DATE/NAME 헤더", box: { x: 0.49, y: 0.174, w: 0.155, h: 0.054 } },
+    { id: "netutor-wizard", label: "NE Tutor 이름: 칸", box: { x: 0.65, y: 0.20, w: 0.21, h: 0.041 } },
+    { id: "other", label: "기타 양식", box: { x: 0.60, y: 0.13, w: 0.28, h: 0.07 } }
+  ];
+  var PRESETS = {};
+  var LABELS = {};
 
   function rotation(value) {
     return ((Number(value) || 0) % 360 + 360) % 360;
@@ -17,9 +19,56 @@
     return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
   }
 
+  function normalizedPreset(preset) {
+    var box = preset && preset.box;
+    if (!preset || typeof preset.id !== "string" || typeof preset.label !== "string" || !box) {
+      return null;
+    }
+    var values = [box.x, box.y, box.w, box.h];
+    if (!values.every(function (value) { return typeof value === "number" && isFinite(value); })) {
+      return null;
+    }
+    return {
+      id: preset.id,
+      label: preset.label,
+      rect: clampRect({ x: box.x, y: box.y, width: box.w, height: box.h })
+    };
+  }
+
+  function setPresets(value) {
+    var source = Array.isArray(value) && value.length ? value : FALLBACK_PRESETS;
+    var normalized = source.map(normalizedPreset).filter(Boolean);
+    if (!normalized.length) {
+      normalized = FALLBACK_PRESETS.map(normalizedPreset);
+    }
+    Object.keys(PRESETS).forEach(function (id) { delete PRESETS[id]; });
+    Object.keys(LABELS).forEach(function (id) { delete LABELS[id]; });
+    normalized.forEach(function (preset) {
+      PRESETS[preset.id] = preset.rect;
+      LABELS[preset.id] = preset.label;
+    });
+  }
+
+  function listPresets() {
+    return Object.keys(PRESETS).map(function (id) {
+      var rect = PRESETS[id];
+      return {
+        id: id,
+        label: LABELS[id],
+        box: { x: rect.x, y: rect.y, w: rect.width, h: rect.height }
+      };
+    });
+  }
+
+  function learnPreset(id, rect) {
+    if (PRESETS[id] && rect) {
+      PRESETS[id] = clampRect(rect);
+    }
+  }
+
   function presetRect(name) {
     var key = name === "netutor" ? "netutor-unit" : name;
-    return copyRect(PRESETS[key] || PRESETS.other);
+    return copyRect(PRESETS[key] || PRESETS.other || PRESETS[Object.keys(PRESETS)[0]]);
   }
 
   function transformRect(rect, degrees) {
@@ -80,8 +129,13 @@
     return rect;
   }
 
+  setPresets();
+
   root.RewordMask = {
     presets: PRESETS,
+    setPresets: setPresets,
+    listPresets: listPresets,
+    learnPreset: learnPreset,
     presetRect: presetRect,
     transformRect: transformRect,
     toUprightRect: toUprightRect,

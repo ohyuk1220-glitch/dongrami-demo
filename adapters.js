@@ -70,6 +70,7 @@
     "createStudent",
     "regeneratePin",
     "changePassword",
+    "getPublicConfiguration",
     "getConsent",
     "getConsentStatus",
     "createConsentLink",
@@ -525,6 +526,10 @@
     }
   };
 
+  RealAdapter.prototype.getPublicConfiguration = function () {
+    return this.request("/public", { auth: false });
+  };
+
   RealAdapter.prototype.getTests = function () { return this.request("/tests"); };
   RealAdapter.prototype.getStudents = function () { return this.request("/students"); };
   RealAdapter.prototype.createStudent = function (studentInput) {
@@ -593,7 +598,8 @@
         testId: testId || undefined,
         studentId: studentId,
         attemptLabel: options && options.attemptLabel,
-        batchSessionId: options && options.batchSessionId
+        batchSessionId: options && options.batchSessionId,
+        mask: options && options.mask
       }
     });
   };
