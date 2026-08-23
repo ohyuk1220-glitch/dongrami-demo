@@ -1160,6 +1160,16 @@ code {
   margin-bottom: 14px;
 }
 
+.analysis-test-heading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.analysis-test-heading h2 {
+  margin-bottom: 4px;
+}
+
 .analysis-meta {
   color: var(--ink-soft);
   font-size: .82rem;
@@ -1969,10 +1979,12 @@ code {
 .consent-link-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 4px;
 }
 
 .consent-link-input {
+  flex: 1 1 210px;
   min-width: 0;
   min-height: 38px;
   border-color: var(--paper-line);

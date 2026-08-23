@@ -73,6 +73,7 @@
     "getConsent",
     "getConsentStatus",
     "createConsentLink",
+    "createManualConsent",
     "acknowledge"
   ].forEach(function (methodName) {
     DataAdapter.prototype[methodName] = function () {
@@ -139,14 +140,18 @@
   };
 
   MockAdapter.prototype.getConsent = function (studentId) {
-    return resolved(this.state.consents[studentId] || null);
+    var consent = this.state.consents[studentId] || null;
+    return resolved(typeof consent === "string" ? consent : consent && consent.acceptedAt);
   };
 
   MockAdapter.prototype.getConsentStatus = function (studentId) {
-    var acceptedAt = this.state.consents[studentId] || null;
+    var consent = this.state.consents[studentId] || null;
+    var acceptedAt = typeof consent === "string" ? consent : consent && consent.acceptedAt;
+    var source = typeof consent === "string" ? "link" : consent && consent.source;
     return resolved({
       status: acceptedAt ? "accepted" : "none",
       acceptedAt: acceptedAt,
+      source: source || null,
       pendingUntil: null
     });
   };
@@ -154,12 +159,24 @@
   MockAdapter.prototype.createConsentLink = function (studentId) {
     var acceptedAt = new Date().toISOString();
     var expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString();
-    this.state.consents[studentId] = acceptedAt;
+    this.state.consents[studentId] = { acceptedAt: acceptedAt, source: "link" };
     this.persist();
     return resolved({
       url: "https://demo.invalid/consent/" + encodeURIComponent(studentId),
       expiresAt: expiresAt
     });
+  };
+
+  MockAdapter.prototype.createManualConsent = function (studentId, input) {
+    var acceptedAt = new Date().toISOString();
+    this.state.consents[studentId] = {
+      acceptedAt: acceptedAt,
+      source: "paper",
+      relation: input && input.relation || "guardian",
+      note: input && input.note || null
+    };
+    this.persist();
+    return resolved({ status: "accepted", source: "paper", acceptedAt: acceptedAt });
   };
 
   MockAdapter.prototype.acknowledge = function (studentId) {
@@ -215,6 +232,45 @@
 
   MockAdapter.prototype.analyzeSheet = function (_image, testId, studentId) {
     var test = this.findTest(testId);
+    if (!testId) {
+      return new Promise(function (resolve) {
+        window.setTimeout(function () {
+          resolve({
+            draftId: "mock-draft-" + Date.now(),
+            testId: "mock-photo-test",
+            test: {
+              id: "mock-photo-test",
+              title: "목 시험지",
+              totalQuestions: 30,
+              source: "photo"
+            },
+            studentId: studentId,
+            score: 28,
+            total: 30,
+            gate: "pass",
+            rules: { correctedHalfRule: true },
+            wrongItems: [
+              {
+                itemId: "mock-photo-item-3",
+                questionNo: 3,
+                word: "adventure",
+                meaning: "모험",
+                mark: "wrong"
+              },
+              {
+                itemId: "mock-photo-item-11",
+                questionNo: 11,
+                word: "기억",
+                meaning: "memory",
+                mark: "wrong"
+              }
+            ],
+            detectedDate: todayString(),
+            orientation: "upright"
+          });
+        }, 350);
+      });
+    }
     var history = (this.state.histories[studentId] || []).filter(function (item) {
       return item.testId === testId;
     });
@@ -234,6 +290,12 @@
         resolve({
           draftId: "mock-draft-" + Date.now(),
           testId: testId,
+          test: {
+            id: testId,
+            title: test.title,
+            totalQuestions: total,
+            source: test.source || "registered"
+          },
           studentId: studentId,
           score: score,
           total: total,
@@ -500,6 +562,16 @@
     });
   };
 
+  RealAdapter.prototype.createManualConsent = function (studentId, input) {
+    return this.request("/students/" + encodeURIComponent(studentId) + "/consent/manual", {
+      method: "POST",
+      body: {
+        relation: input && input.relation || "guardian",
+        note: input && input.note || undefined
+      }
+    });
+  };
+
   RealAdapter.prototype.acknowledge = async function (studentId) {
     var payload = await this.request("/students/" + encodeURIComponent(studentId) + "/acknowledge", {
       method: "POST",
@@ -517,7 +589,7 @@
       method: "POST",
       body: {
         images: images,
-        testId: testId,
+        testId: testId || undefined,
         studentId: studentId,
         attemptLabel: options && options.attemptLabel,
         batchSessionId: options && options.batchSessionId
@@ -527,19 +599,36 @@
 
   RealAdapter.prototype.saveAnalysis = function (studentId, analysis, wrongItems, overrideReason, options) {
     var saveOptions = options || {};
-    var current = new Map(wrongItems.map(function (item) { return [item.itemId, item.mark || "wrong"]; }));
+    var current = new Map(wrongItems.map(function (item) { return [item.itemId, item]; }));
     var edits = [];
     (analysis.wrongItems || []).forEach(function (item) {
-      var nextMark = current.get(item.itemId);
-      if (!nextMark) {
+      var currentItem = current.get(item.itemId);
+      if (!currentItem) {
         edits.push({ itemId: item.itemId, mark: "none" });
-      } else if (nextMark !== item.mark) {
-        edits.push({ itemId: item.itemId, mark: nextMark });
+      } else {
+        var edit = { itemId: item.itemId };
+        if ((currentItem.mark || "wrong") !== item.mark) {
+          edit.mark = currentItem.mark || "wrong";
+        }
+        if (currentItem.word.trim() !== item.word.trim()) {
+          edit.word = currentItem.word;
+        }
+        if (currentItem.meaning.trim() !== item.meaning.trim()) {
+          edit.meaning = currentItem.meaning;
+        }
+        if (Object.keys(edit).length > 1) {
+          edits.push(edit);
+        }
       }
       current.delete(item.itemId);
     });
-    current.forEach(function (mark, itemId) {
-      edits.push({ itemId: itemId, mark: mark });
+    current.forEach(function (item, itemId) {
+      edits.push({
+        itemId: itemId,
+        mark: item.mark || "wrong",
+        word: item.word,
+        meaning: item.meaning
+      });
     });
     analysis.clientRequestId = analysis.clientRequestId || window.crypto.randomUUID();
     var override = overrideReason ? { reason: overrideReason } : undefined;

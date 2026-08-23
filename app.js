@@ -457,8 +457,11 @@
   async function populateTestSelect() {
     var select = byId("test-select");
     select.replaceChildren();
+    var automatic = makeElement("option", "", "사진에서 자동 인식 (기본)");
+    automatic.value = "";
+    select.appendChild(automatic);
     state.tests = await adapter.getTests();
-    state.tests.forEach(function (test) {
+    state.tests.filter(function (test) { return test.source !== "photo"; }).forEach(function (test) {
       var option = makeElement("option", "", test.title + " · " + test.id);
       option.value = test.id;
       select.appendChild(option);
@@ -692,8 +695,8 @@
     var testId = byId("test-select").value;
     var button = byId("analyze-button");
 
-    if (!state.selectedFile || !testId || !state.currentStudent) {
-      showToast("사진과 시험을 먼저 선택해 주세요.");
+    if (!state.selectedFile || !state.currentStudent) {
+      showToast("사진과 학생을 먼저 선택해 주세요.");
       return;
     }
 
@@ -750,13 +753,28 @@
     var container = byId("analysis-summary");
     var card = makeElement("div", "card analysis-score-card");
     var copy = makeElement("div");
-    var test = getTest(state.analysis.testId);
-    var title = makeElement("h2", "", test ? test.title : state.analysis.testId);
-    var meta = makeElement("div", "analysis-meta", formatDate(state.analysis.detectedDate) + " · " + state.analysis.testId);
+    var registeredTest = getTest(state.analysis.testId);
+    var recognizedTest = state.analysis.test || {
+      id: state.analysis.testId,
+      title: registeredTest ? registeredTest.title : state.analysis.testId,
+      totalQuestions: state.analysis.total,
+      source: registeredTest && registeredTest.source || "registered"
+    };
+    var titleRow = makeElement("div", "analysis-test-heading");
+    var title = makeElement(
+      "h2",
+      "",
+      "인식한 시험: " + recognizedTest.title + " · " + recognizedTest.totalQuestions + "문항"
+    );
+    titleRow.appendChild(title);
+    if (state.analysis.rules && state.analysis.rules.totalEstimated) {
+      titleRow.appendChild(makeElement("span", "version-badge", "추정"));
+    }
+    var meta = makeElement("div", "analysis-meta", formatDate(state.analysis.detectedDate));
     var score = makeElement("div", "big-score", String(state.analysis.score));
     var total = makeElement("small", "", "/" + state.analysis.total);
 
-    copy.append(title, meta);
+    copy.append(titleRow, meta);
     score.appendChild(total);
     card.append(copy, score);
     container.replaceChildren(card);
@@ -878,7 +896,8 @@
       wordInput.id = wordId;
       wordInput.type = "text";
       wordInput.value = item.word;
-      wordInput.readOnly = adapter.isReal;
+      var photoMode = state.analysis.test && state.analysis.test.source === "photo";
+      wordInput.readOnly = adapter.isReal && !photoMode;
       wordInput.autocomplete = "off";
       wordInput.addEventListener("input", function () {
         updateWrongItem(index, "word", wordInput.value);
@@ -888,7 +907,7 @@
       meaningInput.id = meaningId;
       meaningInput.type = "text";
       meaningInput.value = item.meaning;
-      meaningInput.readOnly = adapter.isReal;
+      meaningInput.readOnly = adapter.isReal && !photoMode;
       meaningInput.autocomplete = "off";
       meaningInput.addEventListener("input", function () {
         updateWrongItem(index, "meaning", meaningInput.value);
@@ -1427,7 +1446,9 @@
         "span",
         consent.status === "accepted" ? "consent-badge" : "consent-badge is-pending",
         consent.status === "accepted"
-          ? "동의 완료 " + formatConsentDate(consent.acceptedAt)
+          ? (consent.source === "paper"
+            ? "동의 완료(종이)"
+            : "동의 완료 " + formatConsentDate(consent.acceptedAt))
           : consent.status === "pending" ? "동의 링크 대기" : "동의 없음"
       );
       var metrics = makeElement("div", "student-metrics");
@@ -1481,6 +1502,32 @@
         }
       );
       consentAction.dataset.studentId = student.id;
+      var manualConsentAction = null;
+      if (state.currentUser && state.currentUser.role === "owner" && consent.status !== "accepted") {
+        manualConsentAction = makeButton(
+          "종이로 동의 받음",
+          "text-button consent-link-button",
+          async function () {
+            var targetId = this.dataset.studentId;
+            var targetStudent = students.find(function (candidate) { return candidate.id === targetId; });
+            if (!window.confirm(
+              (targetStudent ? targetStudent.nickname + " 학생의 " : "") +
+              "보호자에게 종이 동의서를 받았나요? 확인하면 보호자 관계는 ‘보호자’로 기록됩니다."
+            )) {
+              return;
+            }
+            try {
+              await adapter.createManualConsent(targetId, { relation: "guardian" });
+              delete state.consentLinks[targetId];
+              await renderTeacherStudents();
+              showToast("종이 동의를 기록했어요.");
+            } catch (error) {
+              showToast(error.message || "종이 동의를 기록하지 못했어요.");
+            }
+          }
+        );
+        manualConsentAction.dataset.studentId = student.id;
+      }
       var consentLinkRow = makeElement("div", "consent-link-row");
       var consentLinkInput = makeElement("input", "consent-link-input");
       consentLinkInput.type = "text";
@@ -1495,6 +1542,9 @@
         savedLink ? formatConsentExpiry(savedLink.expiresAt) : ""
       );
       consentLinkRow.append(consentLinkInput, consentAction);
+      if (manualConsentAction) {
+        consentLinkRow.appendChild(manualConsentAction);
+      }
       wrapper.append(card, consentLinkRow, consentLinkExpiry);
       fragment.appendChild(wrapper);
     }
@@ -1507,7 +1557,7 @@
     var fragment = document.createDocumentFragment();
     state.tests = await adapter.getTests();
 
-    state.tests.forEach(function (test) {
+    state.tests.filter(function (test) { return test.source !== "photo"; }).forEach(function (test) {
       var row = makeElement("article", "test-row");
       var copy = makeElement("div");
       var badge = makeElement("span", "version-badge", "v" + test.version);
