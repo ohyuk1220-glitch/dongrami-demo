@@ -38,6 +38,18 @@
       .join(",");
   }
 
+  function normalizeSpelling(value) {
+    if (typeof value !== "string") {
+      return "";
+    }
+
+    return value
+      .normalize("NFKC")
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, " ");
+  }
+
   function meaningParts(value) {
     var normalized = normalizeMeaning(value);
     return normalized ? normalized.split(",") : [];
@@ -166,6 +178,7 @@
     buildQuiz: buildQuiz,
     applyRetestResult: applyRetestResult,
     parseWordList: parseWordList,
-    normalizeMeaning: normalizeMeaning
+    normalizeMeaning: normalizeMeaning,
+    normalizeSpelling: normalizeSpelling
   };
 }());

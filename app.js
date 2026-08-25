@@ -132,8 +132,11 @@
     wordbookFilter: "all",
     quizCount: 5,
     quizChoice: "5",
+    retestMode: "meaning",
     quiz: null,
     teacherStudentId: null,
+    paperRetestChoice: "10",
+    printRetest: null,
     failedPinAttempts: 0,
     lockUntil: 0,
     lockTimer: null,
@@ -147,7 +150,7 @@
     consentLinks: {}
   };
 
-  var viewNames = ["login", "consent", "capture", "analysis", "wordbook", "retest", "records", "teacher", "teacher-detail"];
+  var viewNames = ["login", "consent", "capture", "analysis", "wordbook", "retest", "records", "teacher", "teacher-detail", "print-preview"];
 
   function byId(id) {
     return document.getElementById(id);
@@ -388,6 +391,11 @@
     });
 
     state.currentView = viewName;
+    // 인쇄용 DOM은 화면을 떠나면 즉시 비운다 — 남겨두면 다른 화면에서 Cmd-P 시 이전 학생 시험지·정답지가 인쇄됨
+    if (viewName !== "print-preview") {
+      state.printRetest = null;
+      byId("print-preview-content").replaceChildren();
+    }
     byId("student-navigation").hidden = state.role !== "student" || viewName === "consent";
     byId("student-navigation").querySelector("button[data-view='capture']").hidden =
       adapter.isReal && state.role === "student";
@@ -412,6 +420,8 @@
       await renderTeacherDashboard();
     } else if (viewName === "teacher-detail") {
       await renderTeacherDetail();
+    } else if (viewName === "print-preview") {
+      renderPrintRetestPreview();
     }
 
     resetScroll();
@@ -558,6 +568,7 @@
     state.analysis = null;
     state.wrongItems = [];
     state.quiz = null;
+    state.retestMode = "meaning";
     state.selectedFile = null;
     state.imageBitmap = null;
     state.consentLinks = {};
@@ -1200,13 +1211,32 @@
     var card = makeElement("div", "card retest-start");
     var label = makeElement("p", "", "학습 중인 단어");
     var count = makeElement("strong", "retest-count", learningWords.length + "개");
+    var modeTitle = makeElement("h2", "", "어떻게 풀어 볼까요?");
+    var modeOptions = makeElement("div", "count-options retest-mode-options");
     var title = makeElement("h2", "", "몇 문제를 풀어 볼까요?");
     var options = makeElement("div", "count-options");
+    var modeValues = [
+      { key: "meaning", label: "뜻 맞추기" },
+      { key: "spelling", label: "철자 쓰기" }
+    ];
     var values = [
       { key: "5", label: "5문제", value: 5, disabled: learningWords.length < 5 },
       { key: "10", label: "10문제", value: 10, disabled: learningWords.length < 10 },
       { key: "all", label: "전체", value: learningWords.length, disabled: false }
     ];
+
+    modeOptions.setAttribute("aria-label", "재시험 방식");
+    modeValues.forEach(function (option) {
+      var button = makeButton(option.label, "count-option", function () {
+        state.retestMode = option.key;
+        renderRetestStart();
+      });
+      var active = state.retestMode === option.key;
+      button.id = "retest-mode-" + option.key;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", String(active));
+      modeOptions.appendChild(button);
+    });
 
     if ((state.quizChoice === "10" && learningWords.length < 10) || (state.quizChoice === "5" && learningWords.length < 5)) {
       state.quizChoice = "all";
@@ -1227,8 +1257,13 @@
     });
 
     var start = makeButton("재시험 시작하기", "button button-primary button-block", startQuiz);
+    start.id = "retest-start-button";
     var guide = makeElement("p", "privacy-note", "두 번 연속 맞히면 '다 외운 단어'가 돼요!");
-    card.append(label, count, title, options, start, guide);
+    card.append(label, count, modeTitle, modeOptions);
+    if (state.retestMode === "spelling") {
+      card.appendChild(makeElement("p", "retest-mode-guide", "뜻을 보고 영어 철자를 직접 써요"));
+    }
+    card.append(title, options, start, guide);
     content.replaceChildren(card);
   }
 
@@ -1245,6 +1280,7 @@
 
     state.quiz = {
       questions: questions,
+      mode: state.retestMode,
       index: 0,
       answered: false,
       selectedAnswer: "",
@@ -1257,7 +1293,9 @@
   function gradeAnswer(answer) {
     var quiz = state.quiz;
     var question = quiz.questions[quiz.index];
-    var correct = window.RewordCore.normalizeMeaning(answer) === window.RewordCore.normalizeMeaning(question.answer);
+    var correct = quiz.mode === "spelling"
+      ? window.RewordCore.normalizeSpelling(answer) === window.RewordCore.normalizeSpelling(question.word)
+      : window.RewordCore.normalizeMeaning(answer) === window.RewordCore.normalizeMeaning(question.answer);
 
     if (quiz.answered) {
       return;
@@ -1293,23 +1331,57 @@
   function renderQuizQuestion() {
     var quiz = state.quiz;
     var question = quiz.questions[quiz.index];
+    var isSpelling = quiz.mode === "spelling";
     var content = byId("retest-content");
     var shell = makeElement("div");
     var topline = makeElement("div", "quiz-topline");
     var number = makeElement("span", "", (quiz.index + 1) + " / " + quiz.questions.length);
-    var mode = makeElement("span", "", question.mode === "choice" ? "뜻 고르기" : "뜻 직접 쓰기");
+    var mode = makeElement("span", "", isSpelling ? "철자 쓰기" : (question.mode === "choice" ? "뜻 고르기" : "뜻 직접 쓰기"));
     var progress = makeElement("div", "quiz-progress-track");
     var progressFill = makeElement("span", "quiz-progress-fill");
     var card = makeElement("div", "card quiz-card");
-    var label = makeElement("p", "quiz-word-label", "이 단어의 뜻은?");
-    var word = makeElement("h2", "quiz-word", question.word);
+    var label = makeElement("p", "quiz-word-label", isSpelling ? "이 뜻의 영어 단어는?" : "이 단어의 뜻은?");
+    var word = makeElement("h2", "quiz-word", isSpelling ? question.answer : question.word);
 
     progressFill.style.width = ((quiz.index + 1) / quiz.questions.length * 100) + "%";
     progress.appendChild(progressFill);
     topline.append(number, mode);
     shell.append(topline, progress);
 
-    if (question.mode === "choice") {
+    if (isSpelling) {
+      var spellingForm = makeElement("form", "spelling-answer-form");
+      var spellingLabel = makeElement("label", "", "영어 철자를 입력해 주세요");
+      var spellingInput = makeElement("input");
+      var spellingButton = makeElement("button", "button button-primary button-block", "확인");
+      spellingLabel.htmlFor = "spelling-answer";
+      spellingInput.id = "spelling-answer";
+      spellingInput.type = "text";
+      spellingInput.autocomplete = "off";
+      spellingInput.setAttribute("autocapitalize", "none");
+      spellingInput.setAttribute("autocorrect", "off");
+      spellingInput.spellcheck = false;
+      spellingInput.lang = "en";
+      spellingInput.value = quiz.selectedAnswer;
+      spellingInput.disabled = quiz.answered;
+      spellingButton.type = "submit";
+      spellingButton.disabled = quiz.answered;
+      spellingForm.addEventListener("submit", function (event) {
+        event.preventDefault();
+        if (!spellingInput.value.trim()) {
+          spellingInput.focus();
+          return;
+        }
+        gradeAnswer(spellingInput.value.trim());
+      });
+      spellingForm.append(spellingLabel, spellingInput, spellingButton);
+      // 같은 뜻을 가진 단어가 둘일 수 있으므로 글자 수 힌트로 어느 단어인지 특정한다
+      var hintSlots = question.word.split("").map(function (ch) {
+        return /[\p{L}\p{N}]/u.test(ch) ? "_" : ch;
+      }).join(" ");
+      var hint = makeElement("p", "spelling-hint", hintSlots);
+      hint.setAttribute("aria-label", "글자 수 힌트");
+      card.append(label, word, hint, spellingForm);
+    } else if (question.mode === "choice") {
       var choices = makeElement("div", "choice-list");
       question.choices.forEach(function (choice) {
         var choiceButton = makeButton(choice, "choice-button", function () {
@@ -1356,7 +1428,17 @@
 
     if (quiz.answered) {
       var feedback = makeElement("div", quiz.currentCorrect ? "answer-feedback" : "answer-feedback is-wrong");
-      feedback.textContent = quiz.currentCorrect ? "정답이에요. 동그라미!" : "아쉬워요. 정답은 “" + question.answer + "”이에요.";
+      if (quiz.currentCorrect) {
+        feedback.textContent = "정답이에요. 동그라미!";
+      } else if (isSpelling) {
+        feedback.append(
+          "아쉬워요. 정답은 “",
+          makeElement("strong", "spelling-correct-answer", question.word),
+          "”이에요."
+        );
+      } else {
+        feedback.textContent = "아쉬워요. 정답은 “" + question.answer + "”이에요.";
+      }
       var isLast = quiz.index === quiz.questions.length - 1;
       var next = makeButton(isLast ? "결과 보기" : "다음 문제", "button button-primary button-block quiz-next", nextQuizQuestion);
       card.append(feedback, next);
@@ -1902,6 +1984,77 @@
     });
   }
 
+  function shuffledCopy(items) {
+    var result = items.slice();
+    var index;
+
+    for (index = result.length - 1; index > 0; index -= 1) {
+      var targetIndex = Math.floor(Math.random() * (index + 1));
+      var current = result[index];
+      result[index] = result[targetIndex];
+      result[targetIndex] = current;
+    }
+    return result;
+  }
+
+  function renderPrintRetestPreview() {
+    var preview = state.printRetest;
+    var content = byId("print-preview-content");
+    var printButton = byId("print-button");
+
+    if (!preview || !preview.student || !preview.questions.length) {
+      var empty = makeElement("div", "empty-state");
+      empty.append(
+        makeElement("strong", "", "미리볼 재시험지가 없어요"),
+        makeElement("span", "", "학생 상세에서 문제 수를 고른 뒤 다시 열어 주세요.")
+      );
+      printButton.disabled = true;
+      content.replaceChildren(empty);
+      return;
+    }
+
+    printButton.disabled = false;
+    var documentWrap = makeElement("div", "print-document");
+    var testSheet = makeElement("section", "print-sheet print-test-sheet");
+    var testHeader = makeElement("header", "print-sheet-header");
+    var testTitle = makeElement("h1", "", "동그라미 재시험");
+    var testMeta = makeElement("div", "print-sheet-meta");
+    var questionList = makeElement("ol", "print-question-list");
+    testTitle.id = "print-preview-title";
+    testMeta.append(
+      makeElement("span", "", "학생 " + preview.student.nickname),
+      makeElement("span", "", "날짜 ______"),
+      makeElement("span", "", "점수 ______")
+    );
+    testHeader.append(testTitle, testMeta);
+    preview.questions.forEach(function (question) {
+      var item = makeElement("li");
+      item.append(
+        makeElement("span", "print-question-meaning", question.meaning),
+        makeElement("span", "print-answer-line")
+      );
+      questionList.appendChild(item);
+    });
+    testSheet.append(testHeader, questionList);
+
+    var answerSheet = makeElement("section", "print-sheet print-answer-sheet");
+    var answerHeader = makeElement("header", "print-sheet-header");
+    var answerTitle = makeElement("h1", "", "동그라미 재시험 정답지");
+    var answerMeta = makeElement("div", "print-sheet-meta");
+    var answerList = makeElement("ol", "print-answer-list");
+    answerMeta.append(
+      makeElement("span", "", "학생 " + preview.student.nickname),
+      makeElement("span", "", "채점용")
+    );
+    answerHeader.append(answerTitle, answerMeta);
+    preview.questions.forEach(function (question) {
+      answerList.appendChild(makeElement("li", "", question.word));
+    });
+    answerSheet.append(answerHeader, answerList);
+    documentWrap.append(testSheet, answerSheet);
+    content.replaceChildren(documentWrap);
+  }
+
   async function renderTeacherDetail() {
     var student = await adapter.getStudent(state.teacherStudentId);
     var container = byId("teacher-detail-content");
@@ -2044,6 +2197,75 @@
     manualForm.append(manualFields, manualMessage, manualDuplicate, manualButton);
     manualCard.append(manualHeading, manualForm);
     fragment.appendChild(manualCard);
+
+    var learningWords = words.filter(function (word) { return word.status === "learning"; });
+    var paperCard = makeElement("section", "card paper-retest-card");
+    paperCard.id = "paper-retest-card";
+    var paperHeading = makeElement("div", "section-heading");
+    var paperHeadingCopy = makeElement("div");
+    paperHeadingCopy.append(
+      makeElement("p", "eyebrow", "인쇄용 재시험"),
+      makeElement("h2", "", "종이 재시험지"),
+      makeElement("p", "", "뜻을 보고 영어 단어를 쓰는 시험지를 만들어요.")
+    );
+    var paperLearningCount = makeElement("strong", "paper-learning-count", "학습 중 " + learningWords.length + "개");
+    paperLearningCount.id = "paper-learning-count";
+    paperHeading.append(paperHeadingCopy, paperLearningCount);
+    var paperCountTitle = makeElement("h3", "", "문제 수");
+    var paperCountOptions = makeElement("div", "count-options paper-count-options");
+    paperCountOptions.id = "paper-count-options";
+    paperCountOptions.setAttribute("aria-label", "종이 재시험 문제 수");
+    var paperValues = [
+      { key: "10", label: "10문제", value: 10, disabled: learningWords.length < 10 },
+      { key: "20", label: "20문제", value: 20, disabled: learningWords.length < 20 },
+      { key: "all", label: "전체", value: learningWords.length, disabled: learningWords.length === 0 }
+    ];
+    if (
+      (state.paperRetestChoice === "10" && learningWords.length < 10) ||
+      (state.paperRetestChoice === "20" && learningWords.length < 20)
+    ) {
+      state.paperRetestChoice = "all";
+    }
+    var paperButtons = [];
+    paperValues.forEach(function (option) {
+      var button = makeButton(option.label, "count-option", function () {
+        state.paperRetestChoice = option.key;
+        updatePaperControls();
+      });
+      button.id = "paper-count-" + option.key;
+      button.disabled = option.disabled;
+      button.dataset.paperCount = option.key;
+      paperButtons.push(button);
+      paperCountOptions.appendChild(button);
+    });
+    var paperMessage = makeElement(
+      "p",
+      "paper-retest-message",
+      learningWords.length ? "미리보기를 열 때마다 문항 순서가 바뀌어요." : "학습 중인 단어가 없어요"
+    );
+    var previewButton = makeButton("시험지 미리보기", "button button-primary button-block", function () {
+      var selected = paperValues.find(function (option) { return option.key === state.paperRetestChoice; });
+      var selectedCount = selected ? selected.value : learningWords.length;
+      state.printRetest = {
+        student: { id: student.id, nickname: student.nickname, grade: student.grade },
+        questions: shuffledCopy(learningWords).slice(0, selectedCount)
+      };
+      showView("print-preview");
+    });
+    previewButton.id = "paper-preview-button";
+
+    function updatePaperControls() {
+      paperButtons.forEach(function (button) {
+        var active = button.dataset.paperCount === state.paperRetestChoice;
+        button.classList.toggle("is-active", active);
+        button.setAttribute("aria-pressed", String(active));
+      });
+      previewButton.disabled = learningWords.length === 0;
+    }
+
+    paperCard.append(paperHeading, paperCountTitle, paperCountOptions, paperMessage, previewButton);
+    fragment.appendChild(paperCard);
+    updatePaperControls();
 
     function selectedManualTest() {
       return state.tests.find(function (test) { return test.id === testSelect.value; }) || null;
@@ -2254,6 +2476,12 @@
     byId("password-change-form").addEventListener("submit", changePassword);
     byId("teacher-back-button").addEventListener("click", function () {
       showView("teacher");
+    });
+    byId("print-preview-back-button").addEventListener("click", function () {
+      showView("teacher-detail");
+    });
+    byId("print-button").addEventListener("click", function () {
+      window.print();
     });
     byId("teacher-capture-button").addEventListener("click", function () {
       state.currentStudent = null;

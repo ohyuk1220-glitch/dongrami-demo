@@ -1732,6 +1732,18 @@ code {
   color: var(--accent);
 }
 
+.retest-mode-options {
+  grid-template-columns: repeat(2, 1fr);
+  margin-top: 12px;
+}
+
+.retest-mode-guide {
+  margin: -8px 0 18px;
+  color: var(--accent-deep);
+  font-size: .84rem;
+  font-weight: 750;
+}
+
 .quiz-topline {
   display: flex;
   align-items: center;
@@ -1855,6 +1867,23 @@ code {
   border-left-color: var(--pencil);
   background: var(--bg);
   color: var(--ink);
+}
+
+.spelling-correct-answer {
+  color: var(--pen-red);
+  font-family: var(--font-pen);
+  font-size: 1.25em;
+  font-weight: 700;
+}
+
+.spelling-hint {
+  margin: -4px 0 10px;
+  color: var(--ink-soft);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: .08em;
+  white-space: pre-wrap; /* 단어 사이 공백이 접히면 두 단어가 한 단어처럼 보임 */
 }
 
 .quiz-next {
@@ -2351,6 +2380,111 @@ code {
   background: var(--accent-soft);
 }
 
+.paper-retest-card {
+  margin: 18px 0;
+}
+
+.paper-learning-count {
+  flex: 0 0 auto;
+  border-radius: 9999px;
+  background: var(--accent-soft);
+  padding: 4px 10px;
+  color: var(--accent-deep);
+  font-size: .78rem;
+}
+
+.paper-retest-card h3 {
+  margin: 18px 0 0;
+}
+
+.paper-count-options {
+  margin: 10px 0 12px;
+}
+
+.paper-retest-message {
+  margin-bottom: 14px;
+  font-size: .82rem;
+}
+
+.print-preview-view {
+  background: var(--bg);
+}
+
+.print-preview-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.print-sheet {
+  width: 100%;
+  margin-bottom: 24px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--surface);
+  padding: 28px 24px 34px;
+  color: var(--ink);
+  box-shadow: var(--paper-shadow);
+}
+
+.print-sheet-header {
+  margin-bottom: 28px;
+  border-bottom: 2px solid var(--ink);
+  padding-bottom: 12px;
+}
+
+.print-sheet-header h1 {
+  margin-bottom: 12px;
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 1.65rem;
+  text-align: center;
+}
+
+.print-sheet-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--ink);
+  font-size: .8rem;
+  font-weight: 700;
+}
+
+.print-question-list,
+.print-answer-list {
+  margin: 0;
+  padding-left: 28px;
+}
+
+.print-question-list li {
+  margin-bottom: 22px;
+  padding-left: 4px;
+}
+
+.print-question-meaning {
+  display: block;
+  margin-bottom: 10px;
+  font-weight: 700;
+}
+
+.print-answer-line {
+  display: block;
+  height: 18px;
+  border-bottom: 1px solid var(--ink);
+}
+
+.print-answer-sheet {
+  break-before: page;
+  page-break-before: always;
+}
+
+.print-answer-list li {
+  margin-bottom: 13px;
+  padding-left: 4px;
+  font-weight: 700;
+}
+
 .pin-value {
   color: var(--pencil);
   font-family: var(--font-pen);
@@ -2543,6 +2677,90 @@ code {
   .bottom-nav {
     bottom: 28px;
     border: 1px solid var(--paper-line);
+  }
+}
+
+@media print {
+  @page {
+    size: A4;
+    margin: 12mm;
+  }
+
+  html,
+  body {
+    min-width: 0;
+    min-height: 0;
+    background: var(--surface);
+  }
+
+  body {
+    padding: 0;
+    color: var(--ink);
+    font-size: 11pt;
+  }
+
+  .app-shell {
+    width: auto;
+    max-width: none;
+    min-height: 0;
+    margin: 0;
+    border: 0;
+    background: var(--surface);
+    box-shadow: none;
+  }
+
+  .brand-header,
+  .bottom-nav,
+  .toast,
+  .print-preview-toolbar,
+  .view {
+    display: none !important;
+  }
+
+  #print-preview-view {
+    display: block !important;
+    min-height: 0;
+    background: var(--surface);
+    padding: 0;
+  }
+
+  .print-sheet {
+    width: auto;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    background: var(--surface);
+    padding: 0;
+    color: var(--ink);
+    box-shadow: none;
+  }
+
+  .print-sheet-header {
+    border-bottom-color: var(--ink);
+  }
+
+  .print-sheet-header h1,
+  .print-sheet-meta {
+    color: var(--ink);
+  }
+
+  .print-question-list li {
+    margin-bottom: 8mm;
+    break-inside: avoid;
+  }
+
+  .print-answer-line {
+    border-bottom-color: var(--ink);
+  }
+
+  .print-answer-sheet {
+    break-before: page;
+    page-break-before: always;
+  }
+
+  .print-answer-list li {
+    margin-bottom: 4mm;
+    break-inside: avoid;
   }
 }
 
