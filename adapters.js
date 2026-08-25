@@ -65,6 +65,7 @@
     "getAllWords",
     "getRetestQuiz",
     "saveAnalysis",
+    "saveManualAttempt",
     "saveRetestResult",
     "registerTest",
     "createStudent",
@@ -75,7 +76,8 @@
     "getConsentStatus",
     "createConsentLink",
     "createManualConsent",
-    "acknowledge"
+    "acknowledge",
+    "logClientError"
   ].forEach(function (methodName) {
     DataAdapter.prototype[methodName] = function () {
       return Promise.reject(new Error(methodName + "를 구현해야 합니다."));
@@ -187,6 +189,10 @@
     return resolved(acknowledgedAt);
   };
 
+  MockAdapter.prototype.logClientError = function () {
+    return resolved();
+  };
+
   MockAdapter.prototype.getTests = function () {
     return resolved(clone(this.state.tests));
   };
@@ -248,6 +254,8 @@
             studentId: studentId,
             score: 28,
             total: 30,
+            deduction: 2,
+            expected: 2,
             gate: "pass",
             rules: { correctedHalfRule: true },
             wrongItems: [
@@ -301,6 +309,8 @@
           studentId: studentId,
           score: score,
           total: total,
+          deduction: total - score,
+          expected: total - score,
           gate: "pass",
           wrongItems: words.map(function (item, index) {
             return {
@@ -318,30 +328,32 @@
     });
   };
 
-  MockAdapter.prototype.saveAnalysis = function (studentId, analysis, wrongItems) {
+  MockAdapter.prototype.saveAnalysis = function (studentId, analysis, wrongItems, _overrideReason, options) {
     var currentWords = this.state.wordbooks[studentId] || [];
     var now = analysis.detectedDate || todayString();
-    wrongItems.forEach(function (item, index) {
-      var existing = currentWords.find(function (word) {
-        return word.word.toLowerCase() === item.word.toLowerCase();
-      });
-      if (existing) {
-        existing.meaning = item.meaning;
-        existing.sourceTestId = analysis.testId;
-        existing.status = "learning";
-        existing.consecutiveCorrect = 0;
-      } else {
-        currentWords.push({
-          id: "word-" + Date.now() + "-" + index,
-          word: item.word,
-          meaning: item.meaning,
-          sourceTestId: analysis.testId,
-          status: "learning",
-          consecutiveCorrect: 0,
-          addedAt: now
+    if (!options || options.scoreOnly !== true) {
+      wrongItems.forEach(function (item, index) {
+        var existing = currentWords.find(function (word) {
+          return word.word.toLowerCase() === item.word.toLowerCase();
         });
-      }
-    });
+        if (existing) {
+          existing.meaning = item.meaning;
+          existing.sourceTestId = analysis.testId;
+          existing.status = "learning";
+          existing.consecutiveCorrect = 0;
+        } else {
+          currentWords.push({
+            id: "word-" + Date.now() + "-" + index,
+            word: item.word,
+            meaning: item.meaning,
+            sourceTestId: analysis.testId,
+            status: "learning",
+            consecutiveCorrect: 0,
+            addedAt: now
+          });
+        }
+      });
+    }
     this.state.wordbooks[studentId] = currentWords;
     this.state.histories[studentId] = this.state.histories[studentId] || [];
     this.state.histories[studentId].push({
@@ -353,6 +365,52 @@
     });
     this.persist();
     return resolved({ attempt: clone(analysis), wordbook: clone(currentWords) });
+  };
+
+  MockAdapter.prototype.saveManualAttempt = function (studentId, input) {
+    var test = this.findTest(input.testId);
+    if (!test) {
+      return Promise.reject(new Error("시험을 찾지 못했어요."));
+    }
+    var history = this.state.histories[studentId] || [];
+    var takenOn = input.takenOn || todayString();
+    var existingIndex = history.findIndex(function (item) {
+      return item.testId === input.testId && item.date === takenOn;
+    });
+    var existing = existingIndex === -1 ? null : history[existingIndex];
+    if (existing && !input.onDuplicate) {
+      var duplicate = new Error("같은 날짜의 시험 기록이 이미 있어요.");
+      duplicate.code = "DUPLICATE";
+      duplicate.details = {
+        existing: {
+          attemptId: existing.id,
+          attemptNo: existing.attemptNo || 1,
+          attemptLabel: existing.attemptLabel || null
+        }
+      };
+      return Promise.reject(duplicate);
+    }
+    var attemptNo = input.onDuplicate === "replace" && existing
+      ? existing.attemptNo || 1
+      : history.filter(function (item) { return item.testId === input.testId; }).length + 1;
+    var record = {
+      id: input.onDuplicate === "replace" && existing ? existing.id : "history-" + Date.now(),
+      testId: input.testId,
+      score: test.totalQuestions - input.deductionHalf / 2,
+      total: test.totalQuestions,
+      date: takenOn,
+      attemptNo: attemptNo,
+      attemptLabel: input.attemptLabel || null,
+      source: "manual"
+    };
+    if (input.onDuplicate === "replace" && existing) {
+      history.splice(existingIndex, 1, record);
+    } else {
+      history.push(record);
+    }
+    this.state.histories[studentId] = history;
+    this.persist();
+    return resolved({ attempt: clone(record) });
   };
 
   MockAdapter.prototype.saveRetestResult = function (studentId, results) {
@@ -586,6 +644,18 @@
     return payload.acknowledgedAt;
   };
 
+  RealAdapter.prototype.logClientError = function (input) {
+    return this.request("/client-log", {
+      method: "POST",
+      body: {
+        stage: input.stage,
+        code: input.code,
+        message: input.message,
+        ua: input.ua
+      }
+    });
+  };
+
   RealAdapter.prototype.analyzeSheet = function (image, testId, studentId, options) {
     if (!this.principal || !this.principal.role) {
       return Promise.reject(new Error("실서비스 촬영은 선생님 또는 조교 세션에서만 가능합니다."));
@@ -598,8 +668,7 @@
         testId: testId || undefined,
         studentId: studentId,
         attemptLabel: options && options.attemptLabel,
-        batchSessionId: options && options.batchSessionId,
-        mask: options && options.mask
+        batchSessionId: options && options.batchSessionId
       }
     });
   };
@@ -608,37 +677,41 @@
     var saveOptions = options || {};
     var current = new Map(wrongItems.map(function (item) { return [item.itemId, item]; }));
     var edits = [];
-    (analysis.wrongItems || []).forEach(function (item) {
-      var currentItem = current.get(item.itemId);
-      if (!currentItem) {
-        edits.push({ itemId: item.itemId, mark: "none" });
-      } else {
-        var edit = { itemId: item.itemId };
-        if ((currentItem.mark || "wrong") !== item.mark) {
-          edit.mark = currentItem.mark || "wrong";
+    if (saveOptions.scoreOnly !== true) {
+      (analysis.wrongItems || []).forEach(function (item) {
+        var currentItem = current.get(item.itemId);
+        if (!currentItem) {
+          edits.push({ itemId: item.itemId, mark: "none" });
+        } else {
+          var edit = { itemId: item.itemId };
+          if ((currentItem.mark || "wrong") !== item.mark) {
+            edit.mark = currentItem.mark || "wrong";
+          }
+          if (currentItem.word.trim() !== item.word.trim()) {
+            edit.word = currentItem.word;
+          }
+          if (currentItem.meaning.trim() !== item.meaning.trim()) {
+            edit.meaning = currentItem.meaning;
+          }
+          if (Object.keys(edit).length > 1) {
+            edits.push(edit);
+          }
         }
-        if (currentItem.word.trim() !== item.word.trim()) {
-          edit.word = currentItem.word;
-        }
-        if (currentItem.meaning.trim() !== item.meaning.trim()) {
-          edit.meaning = currentItem.meaning;
-        }
-        if (Object.keys(edit).length > 1) {
-          edits.push(edit);
-        }
-      }
-      current.delete(item.itemId);
-    });
-    current.forEach(function (item, itemId) {
-      edits.push({
-        itemId: itemId,
-        mark: item.mark || "wrong",
-        word: item.word,
-        meaning: item.meaning
+        current.delete(item.itemId);
       });
-    });
+      current.forEach(function (item, itemId) {
+        edits.push({
+          itemId: itemId,
+          mark: item.mark || "wrong",
+          word: item.word,
+          meaning: item.meaning
+        });
+      });
+    }
     analysis.clientRequestId = analysis.clientRequestId || window.crypto.randomUUID();
-    var override = overrideReason ? { reason: overrideReason } : undefined;
+    var override = overrideReason || Number.isInteger(saveOptions.deductionHalf)
+      ? { reason: overrideReason || undefined }
+      : undefined;
     if (override && Number.isInteger(saveOptions.deductionHalf)) {
       override.deductionHalf = saveOptions.deductionHalf;
     }
@@ -646,6 +719,7 @@
       method: "POST",
       body: {
         draftId: analysis.draftId,
+        scoreOnly: saveOptions.scoreOnly === true,
         edits: edits,
         override: override,
         batchSessionId: analysis.batchSessionId || undefined,
@@ -664,12 +738,28 @@
     });
   };
 
+  RealAdapter.prototype.saveManualAttempt = function (studentId, input) {
+    return this.request("/attempts", {
+      method: "POST",
+      body: {
+        studentId: studentId,
+        testId: input.testId,
+        deductionHalf: input.deductionHalf,
+        takenOn: input.takenOn,
+        attemptLabel: input.attemptLabel || undefined,
+        clientRequestId: input.clientRequestId,
+        onDuplicate: input.onDuplicate || undefined
+      }
+    });
+  };
+
   RealAdapter.prototype.registerTest = function (testInput) {
     return this.request("/tests", {
       method: "POST",
       body: {
         title: testInput.title,
         words: testInput.words,
+        totalQuestions: testInput.totalQuestions,
         formHint: testInput.formHint || "other"
       }
     });

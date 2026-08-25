@@ -189,9 +189,11 @@
           <div class="step-mark" aria-hidden="true">1</div>
           <div>
             <h2>채점된 시험지를 찍어 주세요</h2>
-            <p>이름 칸은 접거나 가리고, 채점 표시와 점수가 잘 보이게 전체를 수직으로!</p>
+            <p>채점 표시와 점수가 잘 보이도록 시험지 전체가 나오게 촬영해 주세요.</p>
           </div>
         </div>
+
+        <div class="card consent-required-panel" id="consent-required-panel" role="alert" aria-live="assertive" hidden></div>
 
         <div class="paper-preview" aria-hidden="true">
           <span class="paper-line paper-line-long"></span>
@@ -216,23 +218,14 @@
         <div class="card analysis-setup" id="analysis-setup" hidden>
           <label for="test-select">시험지 선택 (선택 사항)</label>
           <select id="test-select"></select>
-          <label for="form-preset">이름 칸 위치</label>
-          <select id="form-preset">
-            <option value="jihye">지혜의영어 양식</option>
-            <option value="netutor-unit">NE Tutor DATE/NAME 헤더</option>
-            <option value="netutor-wizard">NE Tutor 이름: 칸</option>
-            <option value="other">기타 양식</option>
-          </select>
-          <label class="check-label mask-toggle">
-            <input id="mask-enabled" type="checkbox" checked>
-            <span>이름 칸 가리기</span>
-          </label>
-          <div class="image-editor-actions">
-            <button class="button button-secondary" id="rotate-left-button" type="button">왼쪽 90°</button>
-            <button class="button button-secondary" id="rotate-right-button" type="button">오른쪽 90°</button>
+          <div id="photo-adjustments">
+            <div class="image-editor-actions">
+              <button class="button button-secondary" id="rotate-left-button" type="button">왼쪽 90°</button>
+              <button class="button button-secondary" id="rotate-right-button" type="button">오른쪽 90°</button>
+            </div>
+            <canvas class="image-canvas" id="image-canvas" aria-label="시험지 미리보기" hidden></canvas>
+            <p class="field-help">사진이 비뚤어졌으면 회전 버튼으로 바로잡아 주세요.</p>
           </div>
-          <canvas class="image-canvas" id="image-canvas" aria-label="이름 칸이 가려진 시험지 미리보기" hidden></canvas>
-          <p class="field-help">검은 이름 가림 상자는 옮길 수 있고, 오른쪽 아래 흰 손잡이로 크기를 바꿀 수 있어요. 점수와 회차 표시는 가리지 마세요.</p>
           <button class="button button-primary button-block" id="analyze-button" type="button">오답 찾기</button>
         </div>
 
@@ -251,38 +244,37 @@
         <div class="page-heading page-heading-row">
           <div>
             <p class="eyebrow">판독 결과 확인</p>
-            <h1 id="analysis-title">찾은 오답을 확인해요</h1>
+            <h1 id="analysis-title">인식한 성적을 확인해요</h1>
           </div>
           <button class="text-button" id="retake-button" type="button">다시 찍기</button>
           <span class="theme-logo page-heading-logo" data-theme-logo="mark" aria-hidden="true"></span>
         </div>
-        <div id="analysis-summary"></div>
-        <div id="gate-card" aria-live="polite"></div>
-        <div class="section-heading">
-          <div>
-            <h2>오답 목록</h2>
-            <p>잘못 읽은 내용은 바로 고칠 수 있어요.</p>
+        <div class="card analysis-score-card">
+          <div id="analysis-summary"></div>
+          <label class="score-deduction" id="score-deduction-field" for="score-deduction" hidden>
+            <span>시험지에서 확인한 감점 <span class="optional-label">선택</span></span>
+            <input id="score-deduction" type="number" min="0" step="0.5" inputmode="decimal" placeholder="예: 2.5">
+          </label>
+          <p class="score-error" id="score-error" role="status" aria-live="polite"></p>
+          <button class="button button-primary button-block" id="save-score-button" type="button">성적 저장</button>
+          <div class="duplicate-resolution score-duplicate-resolution" id="score-duplicate-resolution" role="alertdialog" aria-live="assertive" hidden></div>
+        </div>
+        <details class="optional-wordbook" id="optional-wordbook">
+          <summary>오답 단어장에도 담기 (선택)</summary>
+          <div class="optional-wordbook-content">
+            <div id="gate-card" aria-live="polite"></div>
+            <div class="section-heading">
+              <div>
+                <h2>오답 목록</h2>
+                <p>잘못 읽은 내용은 바로 고칠 수 있어요.</p>
+              </div>
+              <span class="count-chip" id="wrong-count">0개</span>
+            </div>
+            <div class="wrong-list" id="wrong-list"></div>
+            <div class="card duplicate-resolution" id="duplicate-resolution" role="alertdialog" aria-live="assertive" hidden></div>
+            <button class="button button-primary button-block sticky-action" id="save-words-button" type="button">오답까지 저장</button>
           </div>
-          <span class="count-chip" id="wrong-count">0개</span>
-        </div>
-        <div class="wrong-list" id="wrong-list"></div>
-        <div class="confirmation-box" id="manual-confirmation" hidden>
-          <label class="check-label">
-            <input id="manual-confirm-checkbox" type="checkbox">
-            <span>시험지와 직접 대조해 오답 목록을 확인했어요</span>
-          </label>
-          <label class="override-deduction" id="override-deduction-field" for="override-deduction" hidden>
-            <span>시험지에서 직접 확인한 감점</span>
-            <input id="override-deduction" type="number" min="0" step="0.5" inputmode="decimal">
-          </label>
-          <label class="override-reason" id="override-reason-field" for="override-reason" hidden>
-            <span>예상과 다른 이유</span>
-            <input id="override-reason" type="text" maxlength="200" autocomplete="off"
-              placeholder="예: 시험지와 직접 대조해 확인함">
-          </label>
-        </div>
-        <div class="card duplicate-resolution" id="duplicate-resolution" role="alertdialog" aria-live="assertive" hidden></div>
-        <button class="button button-primary button-block sticky-action" id="save-words-button" type="button">단어 저장하기</button>
+        </details>
       </section>
 
       <section class="view" id="wordbook-view" aria-labelledby="wordbook-title" hidden>
@@ -380,6 +372,30 @@
           </form>
         </div>
 
+        <section class="card register-card" id="score-only-test-section">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">점수 기록용</p>
+              <h2>점수만 기록하는 시험 만들기</h2>
+              <p>단어가 없는 일반 시험도 성적표에 모을 수 있어요.</p>
+            </div>
+          </div>
+          <form id="score-only-test-form" novalidate>
+            <div class="score-only-test-fields">
+              <div>
+                <label for="score-only-test-title">시험명</label>
+                <input id="score-only-test-title" type="text" required maxlength="80" placeholder="예: 수학 월말평가">
+              </div>
+              <div>
+                <label for="score-only-test-total">만점(문항 수)</label>
+                <input id="score-only-test-total" type="number" min="1" max="500" required placeholder="20">
+              </div>
+            </div>
+            <p class="form-message" id="score-only-test-message" role="status" aria-live="polite"></p>
+            <button class="button button-primary" id="score-only-test-button" type="submit">시험 만들기</button>
+          </form>
+        </section>
+
         <div class="section-heading">
           <div>
             <h2>등록된 시험</h2>
@@ -437,7 +453,6 @@
   <script src="data.js"></script>
   <script src="core.js"></script>
   <script src="adapters.js"></script>
-  <script src="mask.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

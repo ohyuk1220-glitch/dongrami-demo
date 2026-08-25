@@ -40,7 +40,6 @@
     try {
       var publicConfiguration = await adapter.getPublicConfiguration();
       window.RewordTheme = mergeTenantTheme(publicConfiguration);
-      window.RewordMask.setPresets(publicConfiguration.maskPresets);
     } catch (error) {
       console.warn("Tenant public configuration unavailable", error && error.code || "API_ERROR");
     }
@@ -143,12 +142,8 @@
     captureStudents: [],
     imageBitmap: null,
     imageRotation: 0,
-    maskRect: null,
-    maskEnabled: true,
-    maskDragging: null,
     rotationRetried: false,
     correctedHalfRule: true,
-    gateOverrideRequired: false,
     consentLinks: {}
   };
 
@@ -168,16 +163,6 @@
       element.textContent = textValue;
     }
     return element;
-  }
-
-  function renderMaskPresetSelect() {
-    var select = byId("form-preset");
-    select.replaceChildren();
-    window.RewordMask.listPresets().forEach(function (preset) {
-      var option = makeElement("option", "", preset.label);
-      option.value = preset.id;
-      select.appendChild(option);
-    });
   }
 
   function makeButton(textValue, className, onClick) {
@@ -294,6 +279,83 @@
     state.toastTimer = window.setTimeout(function () {
       toast.hidden = true;
     }, 2600);
+  }
+
+  function reportPipelineError(stage, error) {
+    var httpCode = Number.isInteger(error && error.status) ? "HTTP_" + error.status : "NO_HTTP";
+    var errorCode = error && error.code ? String(error.code) : "CLIENT_ERROR";
+    Promise.resolve(adapter.logClientError({
+      stage: String(stage || "unknown").slice(0, 200),
+      code: (httpCode + ":" + errorCode).slice(0, 200),
+      message: String(error && error.message || "알 수 없는 클라이언트 오류").slice(0, 200),
+      ua: String(window.navigator.userAgent || "").slice(0, 200)
+    })).catch(function () {
+      // 오류 기록 실패가 원래 촬영·판독·저장 흐름을 가리지 않게 한다.
+    });
+  }
+
+  function hideConsentRequiredPanel() {
+    var panel = byId("consent-required-panel");
+    panel.hidden = true;
+    panel.replaceChildren();
+  }
+
+  function renderConsentRequiredPanel() {
+    var panel = byId("consent-required-panel");
+    var title = makeElement("strong", "", "보호자 동의가 아직 없어요");
+    var detail = makeElement("span", "", state.currentUser && state.currentUser.role === "owner"
+      ? "아래에서 동의 링크를 만들거나, 받은 종이 동의를 기록해 주세요."
+      : "원장님께 보호자 동의 링크 생성을 요청해 주세요.");
+    panel.replaceChildren(title, detail);
+
+    if (state.currentUser && state.currentUser.role === "owner" && state.currentStudent) {
+      var actions = makeElement("div", "consent-required-actions");
+      var linkButton = makeButton("동의 링크 만들기", "button button-secondary", async function () {
+        linkButton.disabled = true;
+        try {
+          var link = await adapter.createConsentLink(state.currentStudent.id);
+          var linkInput = makeElement("input", "consent-required-link");
+          linkInput.type = "text";
+          linkInput.readOnly = true;
+          linkInput.value = link.url;
+          linkInput.setAttribute("aria-label", "보호자 동의 링크");
+          panel.appendChild(linkInput);
+          try {
+            await navigator.clipboard.writeText(link.url);
+            detail.textContent = "동의 링크를 복사했어요. 보호자에게 전달해 주세요.";
+          } catch (error) {
+            detail.textContent = "링크를 만들었어요. 아래 링크를 복사해 보호자에게 전달해 주세요.";
+            linkInput.focus();
+            linkInput.select();
+          }
+        } catch (error) {
+          reportPipelineError("consent_link", error);
+          showToast(error.message || "동의 링크를 만들지 못했어요.");
+        } finally {
+          linkButton.disabled = false;
+        }
+      });
+      var paperButton = makeButton("종이로 동의 받음(원장)", "button button-secondary", async function () {
+        if (!window.confirm("보호자에게 종이 동의서를 받았나요? 확인하면 보호자 관계는 ‘보호자’로 기록됩니다.")) {
+          return;
+        }
+        paperButton.disabled = true;
+        try {
+          await adapter.createManualConsent(state.currentStudent.id, { relation: "guardian" });
+          hideConsentRequiredPanel();
+          await analyzeSelectedSheet();
+        } catch (error) {
+          reportPipelineError("consent_manual", error);
+          showToast(error.message || "종이 동의를 기록하지 못했어요.");
+        } finally {
+          paperButton.disabled = false;
+        }
+      });
+      actions.append(linkButton, paperButton);
+      panel.appendChild(actions);
+    }
+    panel.hidden = false;
+    panel.scrollIntoView({ behavior: "smooth", block: "center" });
   }
 
   function resetScroll() {
@@ -513,15 +575,17 @@
     automatic.value = "";
     select.appendChild(automatic);
     state.tests = await adapter.getTests();
-    state.tests.filter(function (test) { return test.source !== "photo"; }).forEach(function (test) {
+    state.tests.filter(function (test) {
+      return test.source !== "photo" && Array.isArray(test.words) && test.words.length > 0;
+    }).forEach(function (test) {
       var option = makeElement("option", "", test.title + " · " + test.id);
       option.value = test.id;
       select.appendChild(option);
     });
-    updateFormPreset();
   }
 
   async function renderCapture() {
+    hideConsentRequiredPanel();
     var targetField = byId("capture-student-field");
     var targetSelect = byId("capture-student-select");
     if (state.role === "teacher") {
@@ -562,42 +626,29 @@
     }
     state.selectedFile = file;
     state.imageRotation = 0;
-    state.maskEnabled = true;
-    byId("mask-enabled").checked = true;
     state.rotationRetried = false;
+    hideConsentRequiredPanel();
     try {
       state.imageBitmap = await window.createImageBitmap(file, { imageOrientation: "from-image" });
     } catch (error) {
       state.imageBitmap = await window.createImageBitmap(file);
     }
-    updateFormPreset();
     renderImageCanvas();
     byId("selected-file").textContent = "선택한 사진: " + file.name;
     byId("analysis-setup").hidden = false;
     byId("analysis-setup").scrollIntoView({ behavior: "smooth", block: "center" });
   }
 
-  function presetRect(formHint) {
-    return window.RewordMask.presetRect(formHint);
+  async function handleImageSelection(file) {
+    try {
+      await selectImage(file);
+    } catch (error) {
+      reportPipelineError("capture", error);
+      showToast(error.message || "사진을 준비하지 못했어요.");
+    }
   }
 
-  function updateFormPreset() {
-    var test = getTest(byId("test-select").value);
-    var preset = test && test.formHint ? test.formHint : "other";
-    if (preset === "netutor") {
-      preset = "netutor-unit";
-    }
-    var select = byId("form-preset");
-    var available = window.RewordMask.listPresets().map(function (item) { return item.id; });
-    if (!available.includes(preset)) {
-      preset = available.includes("other") ? "other" : available[0];
-    }
-    select.value = preset;
-    state.maskRect = presetRect(preset);
-    renderImageCanvas();
-  }
-
-  function renderImageCanvas(editorDecoration) {
+  function renderImageCanvas() {
     var canvas = byId("image-canvas");
     if (!canvas || !state.imageBitmap) {
       if (canvas) {
@@ -628,15 +679,6 @@
       sourceHeight * scale
     );
     context.restore();
-    if (state.maskEnabled && state.maskRect) {
-      window.RewordMask.applyMask(
-        context,
-        canvas,
-        state.maskRect,
-        state.imageRotation,
-        editorDecoration !== false
-      );
-    }
   }
 
   function rotateImage(degrees) {
@@ -644,78 +686,10 @@
     renderImageCanvas();
   }
 
-  function canvasPoint(event) {
-    var canvas = byId("image-canvas");
-    var bounds = canvas.getBoundingClientRect();
-    return {
-      x: Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)),
-      y: Math.max(0, Math.min(1, (event.clientY - bounds.top) / bounds.height))
-    };
-  }
-
-  function startMaskDrag(event) {
-    if (!state.maskEnabled || !state.maskRect) {
-      return;
-    }
-    var point = canvasPoint(event);
-    var displayRect = window.RewordMask.clampRect(state.maskRect);
-    var handleSize = 0.035;
-    if (
-      Math.abs(point.x - (displayRect.x + displayRect.width)) <= handleSize &&
-      Math.abs(point.y - (displayRect.y + displayRect.height)) <= handleSize
-    ) {
-      state.maskDragging = { mode: "resize", rect: displayRect };
-      byId("image-canvas").setPointerCapture(event.pointerId);
-      return;
-    }
-    if (
-      point.x >= displayRect.x && point.x <= displayRect.x + displayRect.width &&
-      point.y >= displayRect.y && point.y <= displayRect.y + displayRect.height
-    ) {
-      state.maskDragging = {
-        mode: "move",
-        x: point.x - displayRect.x,
-        y: point.y - displayRect.y,
-        rect: displayRect
-      };
-      byId("image-canvas").setPointerCapture(event.pointerId);
-    }
-  }
-
-  function moveMask(event) {
-    if (!state.maskDragging || !state.maskRect) {
-      return;
-    }
-    var point = canvasPoint(event);
-    var displayRect = state.maskDragging.rect;
-    if (state.maskDragging.mode === "resize") {
-      displayRect = window.RewordMask.clampRect({
-        x: displayRect.x,
-        y: displayRect.y,
-        width: Math.max(0.025, point.x - displayRect.x),
-        height: Math.max(0.025, point.y - displayRect.y)
-      });
-    } else {
-      displayRect = window.RewordMask.clampRect({
-        x: point.x - state.maskDragging.x,
-        y: point.y - state.maskDragging.y,
-        width: displayRect.width,
-        height: displayRect.height
-      });
-    }
-    state.maskRect = window.RewordMask.clampRect(displayRect);
-    renderImageCanvas();
-  }
-
-  function stopMaskDrag() {
-    state.maskDragging = null;
-  }
-
   function preparedCanvasImage() {
     return new Promise(function (resolve, reject) {
-      renderImageCanvas(false);
+      renderImageCanvas();
       byId("image-canvas").toBlob(function (blob) {
-        renderImageCanvas(true);
         if (!blob) {
           reject(new Error("이미지를 준비하지 못했습니다."));
           return;
@@ -768,53 +742,44 @@
     // 판독 중 로그아웃·재로그인하면 응답이 다른 학생 세션에 저장되는 것 방지
     var requestStudent = state.currentStudent;
 
-    function currentMask() {
-      if (!state.maskEnabled || !state.maskRect) {
-        return undefined;
-      }
-      var rect = window.RewordMask.clampRect(state.maskRect);
-      return {
-        presetId: byId("form-preset").value,
-        box: { x: rect.x, y: rect.y, w: rect.width, h: rect.height }
-      };
-    }
-
     try {
       var image = await preparedCanvasImage();
-      var mask = currentMask();
-      var analysis = await adapter.analyzeSheet(image, testId, requestStudent.id, { mask: mask });
-      if (mask) window.RewordMask.learnPreset(mask.presetId, state.maskRect);
+      var analysis = await adapter.analyzeSheet(image, testId, requestStudent.id);
       var rotation = correctionDegrees(analysis.orientation);
       if (analysis.hint === "ROTATE" && rotation && !state.rotationRetried) {
         state.rotationRetried = true;
         rotateImage(rotation);
         image = await preparedCanvasImage();
-        mask = currentMask();
-        analysis = await adapter.analyzeSheet(image, testId, requestStudent.id, { mask: mask });
-        if (mask) window.RewordMask.learnPreset(mask.presetId, state.maskRect);
+        analysis = await adapter.analyzeSheet(image, testId, requestStudent.id);
       }
       if (!state.currentStudent || state.currentStudent.id !== requestStudent.id) {
         return;
       }
       state.analysis = analysis;
       state.correctedHalfRule = !analysis.rules || analysis.rules.correctedHalfRule !== false;
-      state.gateOverrideRequired = false;
       state.wrongItems = analysis.wrongItems.map(function (item) {
         return Object.assign({}, item);
       });
-      byId("manual-confirm-checkbox").checked = false;
-      byId("override-deduction").value = "";
-      byId("override-reason").value = "";
+      byId("score-deduction").value = "";
+      byId("score-error").textContent = "";
       byId("duplicate-resolution").hidden = true;
+      byId("score-duplicate-resolution").hidden = true;
+      byId("optional-wordbook").open = false;
+      hideConsentRequiredPanel();
       renderAnalysis();
       await showView("analysis");
     } catch (error) {
       if (!state.currentStudent || state.currentStudent.id !== requestStudent.id) {
         return;
       }
+      reportPipelineError("analyze", error);
       setup.hidden = false;
       progress.hidden = true;
       progress.classList.remove("is-running");
+      if (error.code === "CONSENT_REQUIRED") {
+        renderConsentRequiredPanel();
+        return;
+      }
       showToast(error.message || "판독하지 못했어요. 잠시 후 다시 시도해 주세요.");
     } finally {
       button.disabled = false;
@@ -823,8 +788,6 @@
 
   function renderAnalysisSummary() {
     var container = byId("analysis-summary");
-    var card = makeElement("div", "card analysis-score-card");
-    var copy = makeElement("div");
     var registeredTest = getTest(state.analysis.testId);
     var recognizedTest = state.analysis.test || {
       id: state.analysis.testId,
@@ -833,56 +796,53 @@
       source: registeredTest && registeredTest.source || "registered"
     };
     var titleRow = makeElement("div", "analysis-test-heading");
-    var title = makeElement(
-      "h2",
-      "",
-      "인식한 시험: " + recognizedTest.title + " · " + recognizedTest.totalQuestions + "문항"
-    );
+    var title = makeElement("h2", "", recognizedTest.title);
     titleRow.appendChild(title);
     if (state.analysis.rules && state.analysis.rules.totalEstimated) {
       titleRow.appendChild(makeElement("span", "version-badge", "추정"));
     }
-    var meta = makeElement("div", "analysis-meta", formatDate(state.analysis.detectedDate));
-    var score = makeElement("div", "big-score", String(state.analysis.score));
-    var total = makeElement("small", "", "/" + state.analysis.total);
+    var meta = makeElement(
+      "div",
+      "analysis-meta",
+      recognizedTest.totalQuestions + "문항 · " + formatDate(state.analysis.detectedDate)
+    );
+    var deduction = state.analysis.expected === null
+      ? null
+      : Number(state.analysis.deduction !== undefined ? state.analysis.deduction : state.analysis.expected);
+    var scoreValue = deduction === null ? "—" : state.analysis.total - deduction;
+    var scoreLine = makeElement(
+      "div",
+      "recognized-score-line",
+      deduction === null
+        ? "인식한 점수: 감점 확인 필요"
+        : "인식한 점수: −" + deduction + " → " + scoreValue + "/" + state.analysis.total
+    );
 
-    copy.append(titleRow, meta);
-    score.appendChild(total);
-    card.append(copy, score);
-    container.replaceChildren(card);
+    container.replaceChildren(titleRow, meta, scoreLine);
+    byId("score-deduction-field").hidden = deduction !== null;
   }
 
   function currentGateResult() {
-    if (adapter.isReal) {
-      var expectedHalf = state.analysis.expected === null
-        ? null
-        : Math.round(Number(state.analysis.expected) * 2);
-      var wrongHalf = state.wrongItems.filter(function (item) {
-        return item.mark === "wrong";
-      }).length * 2;
-      var corrected = state.wrongItems.filter(function (item) {
-        return item.mark === "corrected";
-      }).length;
-      return {
-        pass: !state.gateOverrideRequired && expectedHalf !== null && (
-          expectedHalf === wrongHalf ||
-          (state.correctedHalfRule && expectedHalf === wrongHalf + corrected)
-        ),
-        expected: expectedHalf === null ? null : expectedHalf / 2
-      };
-    }
-    return window.RewordCore.gateCheck(state.analysis.total, state.analysis.score, state.wrongItems.length);
+    var expectedHalf = state.analysis.expected === null
+      ? null
+      : Math.round(Number(state.analysis.expected) * 2);
+    var wrongHalf = state.wrongItems.filter(function (item) {
+      return (item.mark || "wrong") === "wrong";
+    }).length * 2;
+    var corrected = state.wrongItems.filter(function (item) {
+      return item.mark === "corrected";
+    }).length;
+    return {
+      pass: expectedHalf !== null && (
+        expectedHalf === wrongHalf ||
+        (state.correctedHalfRule && expectedHalf === wrongHalf + corrected)
+      ),
+      expected: expectedHalf === null ? null : expectedHalf / 2
+    };
   }
 
-  function hasValidWrongItems() {
-    // 만점(오답 0개)도 성적 기록 저장은 가능해야 하므로 빈 목록을 유효로 본다
-    return state.wrongItems.every(function (item) {
-      return item.word.trim() && item.meaning.trim() && item.mark !== "unclear";
-    });
-  }
-
-  function overrideDeductionHalf() {
-    var inputValue = byId("override-deduction").value.trim();
+  function deductionHalfFromInput(inputId) {
+    var inputValue = byId(inputId).value.trim();
     var value = Number(inputValue);
     var half = Math.round(value * 2);
     return inputValue !== "" && Number.isFinite(value) && value >= 0 &&
@@ -890,46 +850,36 @@
       ? half : null;
   }
 
+  function scoreDeductionHalf() {
+    return deductionHalfFromInput("score-deduction");
+  }
+
   function renderGate() {
     var result = currentGateResult();
     var gate = makeElement("div", result.pass ? "gate" : "gate is-warning");
     var strong;
-    var detail;
-    var confirmation = byId("manual-confirmation");
-    var checkbox = byId("manual-confirm-checkbox");
-    var deductionField = byId("override-deduction-field");
-    var reasonField = byId("override-reason-field");
-    var overrideReason = byId("override-reason").value.trim();
-    var unresolved = state.wrongItems.filter(function (item) { return item.mark === "unclear"; }).length;
-    var needsDeduction = adapter.isReal && state.analysis.expected === null;
 
-    if (result.pass) {
-      strong = makeElement("strong", "", adapter.isReal
-        ? "감점 " + result.expected + "점과 채점 표시가 딱 맞아요"
-        : "오답 " + result.expected + "개 예상, 발견 " + state.wrongItems.length + "개 — 딱 맞아요");
-      detail = makeElement("span", "", "점수와 찾은 오답 수가 맞아요. 단어를 한 번 더 살펴봐 주세요.");
-      confirmation.hidden = true;
-      checkbox.checked = false;
+    if (result.expected === null) {
+      strong = makeElement(
+        "strong",
+        "",
+        "감점을 못 읽었어요 — 찾은 표시 개수로 점수를 계산해요 (직접 입력도 가능)"
+      );
+    } else if (result.pass) {
+      strong = makeElement("strong", "", "감점 " + result.expected + "점과 오답 표시가 딱 맞아요");
     } else {
-      strong = makeElement("strong", "", unresolved
-        ? "판독이 불확실한 문항을 모두 선택해 주세요"
-        : "예상과 달라요. 다시 찍거나 아래에서 직접 고쳐 주세요");
-      detail = makeElement("span", "", adapter.isReal
-        ? (unresolved
-          ? "각 불확실 문항을 오답·세모로 바꾸거나 목록에서 제외해 주세요."
-          : "감점과 현재 오답·세모 표시를 시험지와 다시 대조해 주세요.")
-        : "점수로는 " + result.expected + "개가 예상되지만, 현재 " + state.wrongItems.length + "개가 있어요.");
-      confirmation.hidden = false;
+      strong = makeElement(
+        "strong",
+        "",
+        "시험지 감점(" + result.expected + "점)과 찾은 표시가 달라요 — 저장은 되니, 나중에 시험지만 한 번 확인해 주세요"
+      );
     }
 
-    deductionField.hidden = !needsDeduction;
-    reasonField.hidden = result.pass;
-
-    gate.append(strong, detail);
+    gate.appendChild(strong);
     byId("gate-card").replaceChildren(gate);
     byId("wrong-count").textContent = state.wrongItems.length + "개";
-    byId("save-words-button").disabled = (!result.pass && (!checkbox.checked || !overrideReason)) ||
-      !hasValidWrongItems() || (needsDeduction && overrideDeductionHalf() === null);
+    byId("save-score-button").disabled = !state.analysis;
+    byId("save-words-button").disabled = !state.analysis;
   }
 
   function updateWrongItem(index, fieldName, value) {
@@ -939,7 +889,6 @@
 
   function excludeWrongItem(index) {
     state.wrongItems.splice(index, 1);
-    byId("manual-confirm-checkbox").checked = false;
     renderWrongList();
     renderGate();
   }
@@ -1039,10 +988,9 @@
     renderGate();
   }
 
-  function renderDuplicateResolution(existing) {
-    var container = byId("duplicate-resolution");
+  function fillDuplicateResolution(container, existing, onNewAttempt, onReplace) {
     var attemptLabel = existing && existing.attemptLabel ? " · " + existing.attemptLabel : "";
-    var title = makeElement("strong", "", "오늘 저장한 시험 기록이 이미 있어요");
+    var title = makeElement("strong", "", "같은 날짜에 저장한 시험 기록이 이미 있어요");
     var detail = makeElement(
       "span",
       "",
@@ -1050,61 +998,120 @@
     );
     var actions = makeElement("div", "duplicate-resolution-actions");
     actions.append(
-      makeButton("새 회차로 저장", "button button-secondary", function () { saveWords("new_attempt"); }),
-      makeButton("이전 것 교체", "button button-primary", function () { saveWords("replace"); })
+      makeButton("새 회차로 저장", "button button-secondary", onNewAttempt),
+      makeButton("이전 것 교체", "button button-primary", onReplace)
     );
     container.replaceChildren(title, detail, actions);
     container.hidden = false;
-    byId("save-words-button").disabled = true;
     container.scrollIntoView({ behavior: "smooth", block: "center" });
   }
 
-  async function saveWords(onDuplicate) {
-    var gate = currentGateResult();
-    var confirmed = byId("manual-confirm-checkbox").checked;
-    var overrideReason = byId("override-reason").value.trim();
-    var needsDeduction = adapter.isReal && state.analysis.expected === null;
-    var deductionHalf = needsDeduction ? overrideDeductionHalf() : null;
+  function renderDuplicateResolution(existing, saveMode) {
+    var container = byId(saveMode === "score" ? "score-duplicate-resolution" : "duplicate-resolution");
+    var saveAgain = saveMode === "score" ? saveScore : saveWords;
+    fillDuplicateResolution(
+      container,
+      existing,
+      function () { saveAgain("new_attempt"); },
+      function () { saveAgain("replace"); }
+    );
+    byId(saveMode === "score" ? "save-score-button" : "save-words-button").disabled = true;
+  }
 
-    if ((!gate.pass && (!confirmed || !overrideReason)) || !hasValidWrongItems() ||
-      (needsDeduction && deductionHalf === null)) {
-      showToast("목록을 확인한 뒤 저장해 주세요.");
+  function clearCapturedSheet() {
+    state.selectedFile = null;
+    byId("camera-input").value = "";
+    byId("gallery-input").value = "";
+  }
+
+  async function finishAttemptSave(message, studentView) {
+    clearCapturedSheet();
+    showToast(message);
+    if (state.role === "teacher") {
+      state.teacherStudentId = state.currentStudent.id;
+    }
+    await showView(state.role === "teacher" ? "teacher-detail" : studentView);
+  }
+
+  async function saveScore(onDuplicate) {
+    var needsDeduction = state.analysis.expected === null;
+    var deductionHalf = needsDeduction ? scoreDeductionHalf() : null;
+    var button = byId("save-score-button");
+    byId("score-error").textContent = "";
+    if (needsDeduction && byId("score-deduction").value.trim() && deductionHalf === null) {
+      byId("score-error").textContent = "감점은 0.5점 단위로, 만점보다 작게 입력해 주세요.";
+      byId("score-deduction").focus();
+      return;
+    }
+    button.disabled = true;
+    try {
+      byId("score-duplicate-resolution").hidden = true;
+      await adapter.saveAnalysis(
+        state.currentStudent.id,
+        state.analysis,
+        [],
+        "",
+        { scoreOnly: true, onDuplicate: onDuplicate, deductionHalf: deductionHalf }
+      );
+    } catch (error) {
+      reportPipelineError("save_score", error);
+      if (error.code === "DUPLICATE" && error.details && error.details.existing) {
+        renderDuplicateResolution(error.details.existing, "score");
+        return;
+      }
+      showToast(error.message || "성적을 저장하지 못했어요.");
+      return;
+    } finally {
+      if (byId("score-duplicate-resolution").hidden) {
+        button.disabled = false;
+      }
+    }
+    await finishAttemptSave("성적을 저장했어요.", "records");
+  }
+
+  async function saveWords(onDuplicate) {
+    var needsDeduction = state.analysis.expected === null;
+    var deductionHalf = needsDeduction ? scoreDeductionHalf() : null;
+    var validWrongItems = state.wrongItems.filter(function (item) {
+      return item.mark !== "unclear" && item.word.trim() && item.meaning.trim();
+    });
+    var excludedCount = state.wrongItems.length - validWrongItems.length;
+    var button = byId("save-words-button");
+
+    if (needsDeduction && byId("score-deduction").value.trim() && deductionHalf === null) {
+      byId("score-error").textContent = "감점은 0.5점 단위로, 만점보다 작게 입력해 주세요.";
+      byId("score-deduction").focus();
       return;
     }
 
+    button.disabled = true;
     try {
       byId("duplicate-resolution").hidden = true;
       await adapter.saveAnalysis(
         state.currentStudent.id,
         state.analysis,
-        state.wrongItems,
-        !gate.pass && confirmed ? overrideReason : "",
+        validWrongItems,
+        "",
         { onDuplicate: onDuplicate, deductionHalf: deductionHalf }
       );
     } catch (error) {
+      reportPipelineError("save_full", error);
       if (error.code === "DUPLICATE" && error.details && error.details.existing) {
-        renderDuplicateResolution(error.details.existing);
-        return;
-      }
-      if (error.code === "GATE_MISMATCH") {
-        state.gateOverrideRequired = true;
-        byId("manual-confirm-checkbox").checked = false;
-        renderGate();
-        byId("override-reason").focus();
-        showToast("예상과 다른 이유를 입력한 뒤 다시 저장해 주세요.");
+        renderDuplicateResolution(error.details.existing, "full");
         return;
       }
       showToast(error.message || "저장하지 못했어요.");
       return;
+    } finally {
+      if (byId("duplicate-resolution").hidden) {
+        button.disabled = false;
+      }
     }
-    state.selectedFile = null;
-    byId("camera-input").value = "";
-    byId("gallery-input").value = "";
-    showToast("오답 단어와 시험 기록을 저장했어요.");
-    if (state.role === "teacher") {
-      state.teacherStudentId = state.currentStudent.id;
-    }
-    await showView(state.role === "teacher" ? "teacher-detail" : "wordbook");
+    await finishAttemptSave(
+      "오답과 성적을 저장했어요." +
+        (excludedCount ? " 확인 안 된 " + excludedCount + "개는 담지 않았어요." : ""),
+      "wordbook"
+    );
   }
 
   function statusCounts(words) {
@@ -1640,7 +1647,12 @@
       var badge = makeElement("span", "version-badge", "v" + test.version);
       copy.append(
         makeElement("strong", "", test.title),
-        makeElement("span", "", test.id + " · " + test.totalQuestions + "문항 · 단어 " + test.words.length + "개")
+        makeElement(
+          "span",
+          "",
+          test.id + " · " + test.totalQuestions + "점 · " +
+            (test.words.length ? "단어 " + test.words.length + "개" : "점수 기록용")
+        )
       );
       row.append(copy, badge);
       fragment.appendChild(row);
@@ -1651,6 +1663,7 @@
   async function renderTeacherDashboard() {
     var isOwner = Boolean(state.currentUser && state.currentUser.role === "owner");
     byId("student-create-section").hidden = !isOwner;
+    byId("score-only-test-section").hidden = !isOwner;
     byId("password-change-section").hidden = !(adapter.isReal && state.currentUser);
     byId("student-pin-result").hidden = true;
     byId("student-pin-value").value = "";
@@ -1818,17 +1831,99 @@
     showToast("‘" + test.title + "’을 등록했어요.");
   }
 
+  async function registerScoreOnlyTest(event) {
+    event.preventDefault();
+    var titleInput = byId("score-only-test-title");
+    var totalInput = byId("score-only-test-total");
+    var message = byId("score-only-test-message");
+    var submitButton = byId("score-only-test-button");
+    var title = titleInput.value.trim();
+    var total = Number(totalInput.value);
+
+    if (!title) {
+      message.textContent = "시험명을 입력해 주세요.";
+      titleInput.focus();
+      return;
+    }
+    if (!Number.isInteger(total) || total < 1) {
+      message.textContent = "만점을 1 이상으로 입력해 주세요.";
+      totalInput.focus();
+      return;
+    }
+
+    submitButton.disabled = true;
+    message.textContent = "";
+    try {
+      var test = await adapter.registerTest({
+        title: title,
+        totalQuestions: total,
+        words: []
+      });
+      byId("score-only-test-form").reset();
+      await renderRegisteredTests();
+      showToast("‘" + test.title + "’을 만들었어요.");
+    } catch (error) {
+      message.textContent = error.message || "시험을 만들지 못했어요.";
+    } finally {
+      submitButton.disabled = false;
+    }
+  }
+
+  function localTodayString() {
+    var now = new Date();
+    return [
+      now.getFullYear(),
+      String(now.getMonth() + 1).padStart(2, "0"),
+      String(now.getDate()).padStart(2, "0")
+    ].join("-");
+  }
+
+  function renderTeacherScoreChart(chart, empty, history, testId) {
+    var visible = history.filter(function (record) {
+      return !testId || record.testId === testId;
+    });
+    chart.replaceChildren();
+    chart.style.width = Math.max(100, visible.length * 70) + "px";
+    empty.hidden = visible.length > 0;
+    chart.hidden = visible.length === 0;
+
+    visible.forEach(function (record) {
+      var percent = record.total ? Math.round(record.score / record.total * 100) : 0;
+      var title = getTestTitle(record.testId) + " " + record.score + "/" + record.total;
+      var column = makeElement("div", "chart-column");
+      var value = makeElement("span", "chart-value", percent + "%");
+      var bar = makeElement("span", "chart-bar");
+      var label = makeElement("span", "chart-label", record.date.slice(5).replace("-", "."));
+      column.title = title;
+      bar.title = title;
+      bar.style.height = Math.max(percent * 1.55, 4) + "px";
+      column.append(value, bar, label);
+      chart.appendChild(column);
+    });
+  }
+
   async function renderTeacherDetail() {
     var student = await adapter.getStudent(state.teacherStudentId);
     var container = byId("teacher-detail-content");
     var fragment = document.createDocumentFragment();
 
     if (!student) {
-      var empty = makeElement("div", "empty-state");
-      empty.append(makeElement("strong", "", "학생 정보를 찾지 못했어요"));
-      container.replaceChildren(empty);
+      var missingStudent = makeElement("div", "empty-state");
+      missingStudent.append(makeElement("strong", "", "학생 정보를 찾지 못했어요"));
+      container.replaceChildren(missingStudent);
       return;
     }
+
+    var detailData = await Promise.all([
+      adapter.getHistory(student.id),
+      adapter.getWordbook(student.id),
+      adapter.getTests()
+    ]);
+    var history = detailData[0].slice().sort(function (first, second) {
+      return first.date.localeCompare(second.date);
+    });
+    var words = detailData[1];
+    state.tests = detailData[2];
 
     var heading = makeElement("div", "detail-heading");
     var headingCopy = makeElement("div");
@@ -1838,6 +1933,193 @@
     headingCopy.append(eyebrow, title);
     heading.appendChild(headingCopy);
     fragment.appendChild(heading);
+
+    var chartCard = makeElement("section", "card chart-card teacher-chart-card");
+    var chartHeading = makeElement("div", "teacher-chart-heading");
+    var chartCopy = makeElement("div");
+    var chartTitle = makeElement("h2", "", "성적 추이");
+    chartCopy.append(chartTitle, makeElement("p", "", "지금까지의 시험 점수를 날짜순으로 보여요."));
+    var chartFilterLabel = makeElement("label", "teacher-chart-filter", "시험별 보기");
+    var chartFilter = makeElement("select");
+    chartFilter.id = "teacher-chart-filter";
+    var allTests = makeElement("option", "", "전체 시험");
+    allTests.value = "";
+    chartFilter.appendChild(allTests);
+    Array.from(new Set(history.map(function (record) { return record.testId; }))).forEach(function (testId) {
+      var option = makeElement("option", "", getTestTitle(testId));
+      option.value = testId;
+      chartFilter.appendChild(option);
+    });
+    chartFilterLabel.htmlFor = chartFilter.id;
+    chartFilterLabel.appendChild(chartFilter);
+    chartHeading.append(chartCopy, chartFilterLabel);
+    var chartScroll = makeElement("div", "teacher-chart-scroll");
+    var chart = makeElement("div", "score-chart teacher-score-chart");
+    chart.setAttribute("role", "img");
+    chart.setAttribute("aria-label", "학생 성적 추이 막대그래프");
+    var chartEmpty = makeElement("div", "empty-state");
+    chartEmpty.append(
+      makeElement("strong", "", "아직 성적 기록이 없어요"),
+      makeElement("span", "", "아래에서 점수를 직접 입력할 수 있어요.")
+    );
+    chartScroll.appendChild(chart);
+    chartCard.append(chartHeading, chartScroll, chartEmpty);
+    chartFilter.addEventListener("change", function () {
+      renderTeacherScoreChart(chart, chartEmpty, history, chartFilter.value);
+    });
+    renderTeacherScoreChart(chart, chartEmpty, history, "");
+    fragment.appendChild(chartCard);
+
+    var manualCard = makeElement("section", "card manual-score-card");
+    var manualHeading = makeElement("div", "section-heading");
+    var manualHeadingCopy = makeElement("div");
+    manualHeadingCopy.append(
+      makeElement("p", "eyebrow", "사진 없이 기록"),
+      makeElement("h2", "", "점수 직접 입력"),
+      makeElement("p", "", "시험과 점수를 고르면 그래프에 바로 더해져요.")
+    );
+    manualHeading.appendChild(manualHeadingCopy);
+    var manualForm = makeElement("form");
+    manualForm.id = "manual-score-form";
+    manualForm.noValidate = true;
+    var manualFields = makeElement("div", "manual-score-fields");
+
+    var testField = makeElement("div");
+    var testLabel = makeElement("label", "", "시험");
+    var testSelect = makeElement("select");
+    testSelect.id = "manual-test-select";
+    testLabel.htmlFor = testSelect.id;
+    state.tests.forEach(function (test) {
+      var option = makeElement("option", "", test.title);
+      option.value = test.id;
+      testSelect.appendChild(option);
+    });
+    testField.append(testLabel, testSelect);
+
+    var scoreField = makeElement("div");
+    var scoreLabel = makeElement("label", "", "점수");
+    var scoreInput = makeElement("input");
+    scoreInput.id = "manual-score-input";
+    scoreInput.type = "number";
+    scoreInput.min = "0";
+    scoreInput.step = "0.5";
+    scoreInput.inputMode = "decimal";
+    scoreLabel.htmlFor = scoreInput.id;
+    var totalHelp = makeElement("span", "field-help manual-score-total");
+    totalHelp.id = "manual-score-total";
+    scoreField.append(scoreLabel, scoreInput, totalHelp);
+
+    var dateField = makeElement("div");
+    var dateLabel = makeElement("label", "", "날짜");
+    var dateInput = makeElement("input");
+    dateInput.id = "manual-taken-on";
+    dateInput.type = "date";
+    dateInput.value = localTodayString();
+    dateLabel.htmlFor = dateInput.id;
+    dateField.append(dateLabel, dateInput);
+
+    var attemptField = makeElement("div");
+    var attemptLabel = makeElement("label", "", "회차 라벨");
+    var optional = makeElement("span", "optional-label", "선택");
+    var attemptInput = makeElement("input");
+    attemptInput.id = "manual-attempt-label";
+    attemptInput.type = "text";
+    attemptInput.maxLength = 40;
+    attemptInput.placeholder = "예: 첫 시험, 보충 시험";
+    attemptLabel.htmlFor = attemptInput.id;
+    attemptLabel.append(" ", optional);
+    attemptField.append(attemptLabel, attemptInput);
+    manualFields.append(testField, scoreField, dateField, attemptField);
+
+    var manualMessage = makeElement("p", "form-message");
+    manualMessage.id = "manual-score-message";
+    manualMessage.setAttribute("role", "status");
+    manualMessage.setAttribute("aria-live", "polite");
+    var manualDuplicate = makeElement("div", "duplicate-resolution score-duplicate-resolution");
+    manualDuplicate.id = "manual-score-duplicate-resolution";
+    manualDuplicate.hidden = true;
+    var manualButton = makeButton("점수 기록하기", "button button-primary", null);
+    manualButton.id = "manual-score-button";
+    manualButton.type = "submit";
+    manualForm.append(manualFields, manualMessage, manualDuplicate, manualButton);
+    manualCard.append(manualHeading, manualForm);
+    fragment.appendChild(manualCard);
+
+    function selectedManualTest() {
+      return state.tests.find(function (test) { return test.id === testSelect.value; }) || null;
+    }
+
+    function updateManualTotal() {
+      var selectedTest = selectedManualTest();
+      scoreInput.max = selectedTest ? String(selectedTest.totalQuestions) : "0";
+      totalHelp.textContent = selectedTest ? "만점 " + selectedTest.totalQuestions + "점" : "시험을 먼저 만들어 주세요.";
+      manualButton.disabled = !selectedTest;
+    }
+
+    var manualRequestId = null;
+    async function saveManualScore(onDuplicate) {
+      var selectedTest = selectedManualTest();
+      var score = Number(scoreInput.value);
+      var takenOn = dateInput.value;
+      if (!selectedTest) {
+        manualMessage.textContent = "시험을 먼저 선택해 주세요.";
+        return;
+      }
+      if (
+        scoreInput.value.trim() === "" || !Number.isFinite(score) || score < 0 ||
+        score > selectedTest.totalQuestions || Math.round(score * 2) / 2 !== score
+      ) {
+        manualMessage.textContent = "점수는 0점부터 만점까지 0.5점 단위로 입력해 주세요.";
+        scoreInput.focus();
+        return;
+      }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(takenOn)) {
+        manualMessage.textContent = "시험 날짜를 선택해 주세요.";
+        dateInput.focus();
+        return;
+      }
+
+      manualMessage.textContent = "";
+      manualDuplicate.hidden = true;
+      manualButton.disabled = true;
+      manualRequestId = manualRequestId || (window.crypto.randomUUID
+        ? window.crypto.randomUUID()
+        : "manual-" + Date.now() + "-" + Math.random());
+      try {
+        await adapter.saveManualAttempt(student.id, {
+          testId: selectedTest.id,
+          deductionHalf: Math.round((selectedTest.totalQuestions - score) * 2),
+          takenOn: takenOn,
+          attemptLabel: attemptInput.value.trim() || undefined,
+          clientRequestId: manualRequestId,
+          onDuplicate: onDuplicate
+        });
+        await renderTeacherDetail();
+        showToast("점수를 기록했어요");
+      } catch (error) {
+        if (error.code === "DUPLICATE" && error.details && error.details.existing) {
+          fillDuplicateResolution(
+            manualDuplicate,
+            error.details.existing,
+            function () { saveManualScore("new_attempt"); },
+            function () { saveManualScore("replace"); }
+          );
+          return;
+        }
+        manualMessage.textContent = error.message || "점수를 기록하지 못했어요.";
+      } finally {
+        if (manualDuplicate.hidden) {
+          manualButton.disabled = false;
+        }
+      }
+    }
+
+    testSelect.addEventListener("change", updateManualTotal);
+    manualForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      saveManualScore();
+    });
+    updateManualTotal();
 
     var pinCard = makeElement("div", "card pin-card");
     var pinTop = makeElement("div", "detail-heading");
@@ -1871,12 +2153,12 @@
     });
     thead.appendChild(headerRow);
     var tbody = makeElement("tbody");
-    var history = await adapter.getHistory(student.id);
     history.slice().reverse().forEach(function (record) {
       var row = makeElement("tr");
+      var testName = getTestTitle(record.testId) + (record.attemptLabel ? " · " + record.attemptLabel : "");
       row.append(
         makeElement("td", "", formatDate(record.date)),
-        makeElement("td", "", getTestTitle(record.testId)),
+        makeElement("td", "", testName),
         makeElement("td", "", record.score + "/" + record.total)
       );
       tbody.appendChild(row);
@@ -1889,7 +2171,6 @@
     wordHeading.appendChild(makeElement("h2", "", "오답 단어"));
     fragment.appendChild(wordHeading);
     var wordList = makeElement("div", "word-list");
-    var words = await adapter.getWordbook(student.id);
     words.forEach(function (word) {
       var card = makeElement("article", word.status === "graduated" ? "word-card is-graduated" : "word-card");
       var top = makeElement("div", "word-topline");
@@ -1927,10 +2208,10 @@
       }
     });
     byId("camera-input").addEventListener("change", function (event) {
-      selectImage(event.target.files[0]);
+      handleImageSelection(event.target.files[0]);
     });
     byId("gallery-input").addEventListener("change", function (event) {
-      selectImage(event.target.files[0]);
+      handleImageSelection(event.target.files[0]);
     });
     byId("analyze-button").addEventListener("click", analyzeSelectedSheet);
     byId("capture-student-select").addEventListener("change", function (event) {
@@ -1939,21 +2220,8 @@
       }) || null;
       state.teacherStudentId = state.currentStudent ? state.currentStudent.id : null;
     });
-    byId("test-select").addEventListener("change", updateFormPreset);
-    byId("form-preset").addEventListener("change", function (event) {
-      state.maskRect = presetRect(event.target.value);
-      renderImageCanvas();
-    });
-    byId("mask-enabled").addEventListener("change", function (event) {
-      state.maskEnabled = event.target.checked;
-      renderImageCanvas();
-    });
     byId("rotate-left-button").addEventListener("click", function () { rotateImage(-90); });
     byId("rotate-right-button").addEventListener("click", function () { rotateImage(90); });
-    byId("image-canvas").addEventListener("pointerdown", startMaskDrag);
-    byId("image-canvas").addEventListener("pointermove", moveMask);
-    byId("image-canvas").addEventListener("pointerup", stopMaskDrag);
-    byId("image-canvas").addEventListener("pointercancel", stopMaskDrag);
     byId("retake-button").addEventListener("click", function () {
       state.selectedFile = null;
       // 같은 파일을 다시 골라도 change 이벤트가 나도록 입력값 초기화
@@ -1962,9 +2230,7 @@
       byId("selected-file").textContent = "";
       showView("capture");
     });
-    byId("manual-confirm-checkbox").addEventListener("change", renderGate);
-    byId("override-deduction").addEventListener("input", renderGate);
-    byId("override-reason").addEventListener("input", renderGate);
+    byId("save-score-button").addEventListener("click", function () { saveScore(); });
     byId("save-words-button").addEventListener("click", function () { saveWords(); });
     byId("wordbook-filters").addEventListener("click", function (event) {
       var button = event.target.closest("button[data-filter]");
@@ -1982,6 +2248,7 @@
     });
     byId("test-register-form").addEventListener("submit", registerTest);
     byId("test-words").addEventListener("input", renderParseMessage);
+    byId("score-only-test-form").addEventListener("submit", registerScoreOnlyTest);
     byId("student-create-form").addEventListener("submit", createStudent);
     byId("student-pin-copy-button").addEventListener("click", copyIssuedPin);
     byId("password-change-form").addEventListener("submit", changePassword);
@@ -1991,11 +2258,13 @@
     byId("teacher-capture-button").addEventListener("click", function () {
       state.currentStudent = null;
       state.selectedFile = null;
+      byId("camera-input").value = "";
+      byId("gallery-input").value = "";
+      byId("selected-file").textContent = "";
       showView("capture");
     });
   }
 
-  renderMaskPresetSelect();
   bindEvents();
   if (adapter.isReal) {
     byId("mode-badge").textContent = "API 모드";
