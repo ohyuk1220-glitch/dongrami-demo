@@ -1053,6 +1053,12 @@ code {
   margin: 0;
 }
 
+.file-button.is-disabled {
+  cursor: not-allowed;
+  opacity: .55;
+  pointer-events: none;
+}
+
 .privacy-center,
 .selected-file {
   text-align: center;
@@ -1101,16 +1107,57 @@ code {
   margin-bottom: 20px;
 }
 
+.page-previews {
+  display: grid;
+  gap: 14px;
+  margin: 14px 0;
+}
+
+.page-preview-card {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--bg);
+}
+
+.page-preview-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 11px 12px;
+}
+
+.page-preview-heading strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--accent-deep);
+  font-size: .86rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.page-preview-heading span {
+  flex: 0 0 auto;
+  color: var(--ink-soft);
+  font-size: .73rem;
+}
+
 .image-editor-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px;
-  margin: 14px 0;
+  padding: 10px 12px 12px;
 }
 
 .image-editor-actions .button {
   min-height: 42px;
   padding: 8px 12px;
+}
+
+.page-remove-button {
+  grid-column: 1 / -1;
+  color: var(--pen-red);
 }
 
 .mask-badge {
@@ -1138,11 +1185,9 @@ code {
   display: block;
   width: 100%;
   height: auto;
-  border: 1px solid var(--line);
-  border-radius: 5px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
   background: #fff;
-  cursor: move;
-  touch-action: none;
 }
 
 .image-canvas[hidden] {
@@ -1259,6 +1304,12 @@ code {
 
 .score-error:empty {
   display: none;
+}
+
+.score-only-button {
+  min-height: 42px;
+  margin-top: 9px;
+  font-size: .82rem;
 }
 
 .optional-wordbook {

@@ -204,12 +204,12 @@
 
         <div class="photo-actions">
           <label class="button button-primary file-button" for="camera-input">
-            시험지 촬영하기
+            <span id="camera-action-text">시험지 촬영하기</span>
             <input class="sr-only" id="camera-input" type="file" accept="image/*" capture="environment">
           </label>
           <label class="button button-secondary file-button" for="gallery-input">
-            갤러리에서 선택
-            <input class="sr-only" id="gallery-input" type="file" accept="image/*">
+            <span id="gallery-action-text">갤러리에서 선택</span>
+            <input class="sr-only" id="gallery-input" type="file" accept="image/*" multiple>
           </label>
         </div>
         <p class="privacy-note privacy-center">동그라미 앱은 사진을 판독 직후 폐기하며 저장하지 않아요</p>
@@ -219,11 +219,7 @@
           <label for="test-select">시험지 선택 (선택 사항)</label>
           <select id="test-select"></select>
           <div id="photo-adjustments">
-            <div class="image-editor-actions">
-              <button class="button button-secondary" id="rotate-left-button" type="button">왼쪽 90°</button>
-              <button class="button button-secondary" id="rotate-right-button" type="button">오른쪽 90°</button>
-            </div>
-            <canvas class="image-canvas" id="image-canvas" aria-label="시험지 미리보기" hidden></canvas>
+            <div class="page-previews" id="page-previews"></div>
             <p class="field-help">사진이 비뚤어졌으면 회전 버튼으로 바로잡아 주세요.</p>
           </div>
           <button class="button button-primary button-block" id="analyze-button" type="button">오답 찾기</button>
@@ -256,11 +252,13 @@
             <input id="score-deduction" type="number" min="0" step="0.5" inputmode="decimal" placeholder="예: 2.5">
           </label>
           <p class="score-error" id="score-error" role="status" aria-live="polite"></p>
-          <button class="button button-primary button-block" id="save-score-button" type="button">성적 저장</button>
+          <button class="button button-primary button-block" id="save-score-button" type="button">저장하기</button>
+          <button class="button button-secondary button-block score-only-button" id="save-score-only-button" type="button">성적만 저장</button>
+          <div class="card duplicate-resolution" id="duplicate-resolution" role="alertdialog" aria-live="assertive" hidden></div>
           <div class="duplicate-resolution score-duplicate-resolution" id="score-duplicate-resolution" role="alertdialog" aria-live="assertive" hidden></div>
         </div>
         <details class="optional-wordbook" id="optional-wordbook">
-          <summary>오답 단어장에도 담기 (선택)</summary>
+          <summary>오답 단어 확인·수정 (선택)</summary>
           <div class="optional-wordbook-content">
             <div id="gate-card" aria-live="polite"></div>
             <div class="section-heading">
@@ -271,8 +269,6 @@
               <span class="count-chip" id="wrong-count">0개</span>
             </div>
             <div class="wrong-list" id="wrong-list"></div>
-            <div class="card duplicate-resolution" id="duplicate-resolution" role="alertdialog" aria-live="assertive" hidden></div>
-            <button class="button button-primary button-block sticky-action" id="save-words-button" type="button">오답까지 저장</button>
           </div>
         </details>
       </section>

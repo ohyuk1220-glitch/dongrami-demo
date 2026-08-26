@@ -126,7 +126,7 @@
     currentUser: null,
     currentStudent: null,
     currentView: "login",
-    selectedFile: null,
+    pages: [],
     analysis: null,
     wrongItems: [],
     wordbookFilter: "all",
@@ -143,9 +143,12 @@
     toastTimer: null,
     tests: [],
     captureStudents: [],
-    imageBitmap: null,
-    imageRotation: 0,
     rotationRetried: false,
+    rotateWarned: false,
+    pageGeneration: 0,
+    deferredPages: [],
+    analysisInProgress: false,
+    saveInProgress: false,
     correctedHalfRule: true,
     consentLinks: {}
   };
@@ -569,12 +572,8 @@
     state.wrongItems = [];
     state.quiz = null;
     state.retestMode = "meaning";
-    state.selectedFile = null;
-    state.imageBitmap = null;
     state.consentLinks = {};
-    byId("camera-input").value = "";
-    byId("gallery-input").value = "";
-    byId("selected-file").textContent = "";
+    clearPages();
     switchLoginTab("student");
     await showView("login");
   }
@@ -624,66 +623,177 @@
       byId("student-greeting").textContent = state.currentStudent.nickname + ", 어서 와!";
     }
     await populateTestSelect();
-    byId("analysis-setup").hidden = !state.selectedFile;
     byId("analysis-progress").hidden = true;
     byId("analysis-progress").classList.remove("is-running");
     byId("analysis-progress").querySelector("[role='progressbar']").setAttribute("aria-valuenow", "0");
-    byId("selected-file").textContent = state.selectedFile ? "선택한 사진: " + state.selectedFile.name : "";
+    renderPagePreviews();
+    updatePageSelection();
   }
 
-  async function selectImage(file) {
-    if (!file) {
-      return;
+  function updatePageSelection() {
+    var pageCount = state.pages.length;
+    var controlsDisabled = state.analysisInProgress || pageCount >= 3;
+    var cameraInput = byId("camera-input");
+    var galleryInput = byId("gallery-input");
+    var cameraLabel = cameraInput.closest("label");
+    var galleryLabel = galleryInput.closest("label");
+
+    byId("selected-file").textContent = pageCount ? "선택한 사진 " + pageCount + "장" : "";
+    byId("camera-action-text").textContent = pageCount ? "촬영해서 뒷장 추가하기" : "시험지 촬영하기";
+    byId("gallery-action-text").textContent = pageCount ? "갤러리에서 뒷장 추가하기" : "갤러리에서 선택";
+    cameraInput.disabled = controlsDisabled;
+    galleryInput.disabled = controlsDisabled;
+    cameraLabel.classList.toggle("is-disabled", controlsDisabled);
+    galleryLabel.classList.toggle("is-disabled", controlsDisabled);
+    cameraLabel.setAttribute("aria-disabled", controlsDisabled ? "true" : "false");
+    galleryLabel.setAttribute("aria-disabled", controlsDisabled ? "true" : "false");
+    byId("test-select").disabled = state.analysisInProgress;
+    byId("capture-student-select").disabled = state.analysisInProgress;
+    byId("analyze-button").disabled = state.analysisInProgress || !pageCount;
+    if (!state.analysisInProgress) {
+      byId("analysis-setup").hidden = !pageCount;
     }
-    state.selectedFile = file;
-    state.imageRotation = 0;
+  }
+
+  function closePageBitmap(page) {
+    if (page && page.bitmap && typeof page.bitmap.close === "function") {
+      page.bitmap.close();
+    }
+  }
+
+  function clearPages() {
+    state.pageGeneration += 1;
+    if (state.analysisInProgress) {
+      state.deferredPages = state.deferredPages.concat(state.pages);
+    } else {
+      state.pages.forEach(closePageBitmap);
+    }
+    state.pages = [];
     state.rotationRetried = false;
-    hideConsentRequiredPanel();
-    try {
-      state.imageBitmap = await window.createImageBitmap(file, { imageOrientation: "from-image" });
-    } catch (error) {
-      state.imageBitmap = await window.createImageBitmap(file);
-    }
-    renderImageCanvas();
-    byId("selected-file").textContent = "선택한 사진: " + file.name;
-    byId("analysis-setup").hidden = false;
-    byId("analysis-setup").scrollIntoView({ behavior: "smooth", block: "center" });
+    state.rotateWarned = false;
+    byId("camera-input").value = "";
+    byId("gallery-input").value = "";
+    byId("page-previews").replaceChildren();
+    updatePageSelection();
   }
 
-  async function handleImageSelection(file) {
-    try {
-      await selectImage(file);
-    } catch (error) {
-      reportPipelineError("capture", error);
-      showToast(error.message || "사진을 준비하지 못했어요.");
-    }
-  }
-
-  function renderImageCanvas() {
-    var canvas = byId("image-canvas");
-    if (!canvas || !state.imageBitmap) {
-      if (canvas) {
-        canvas.hidden = true;
+  function imageFileDimensions(file) {
+    return new Promise(function (resolve, reject) {
+      var image = new Image();
+      var objectUrl = URL.createObjectURL(file);
+      function finish() {
+        URL.revokeObjectURL(objectUrl);
+        image.removeAttribute("src");
       }
+      image.addEventListener("load", function () {
+        var dimensions = { width: image.naturalWidth, height: image.naturalHeight };
+        finish();
+        resolve(dimensions);
+      });
+      image.addEventListener("error", function () {
+        finish();
+        reject(new Error("사진 크기를 확인하지 못했어요."));
+      });
+      image.src = objectUrl;
+    });
+  }
+
+  async function createResizedBitmap(file) {
+    var dimensions = await imageFileDimensions(file);
+    var scale = Math.min(2000 / Math.max(dimensions.width, dimensions.height), 1);
+    var resizeOptions = {
+      imageOrientation: "from-image",
+      resizeWidth: Math.max(1, Math.round(dimensions.width * scale)),
+      resizeHeight: Math.max(1, Math.round(dimensions.height * scale)),
+      resizeQuality: "high"
+    };
+    try {
+      return await window.createImageBitmap(file, resizeOptions);
+    } catch (error) {
+      try {
+        return await window.createImageBitmap(file, { imageOrientation: "from-image" });
+      } catch (orientationError) {
+        // 풀해상 비트맵이어도 캔버스 렌더에서 긴 변을 2000px로 줄여 인코딩한다.
+        return window.createImageBitmap(file);
+      }
+    }
+  }
+
+  async function selectImage(file, batchGeneration) {
+    if (!file || state.pages.length >= 3) {
+      return false;
+    }
+    // 배치 선택은 배치 시작 시점의 세대를 공유한다 — 파일별 재샘플이면 세대 교체(로그아웃·판독 시작) 후
+    // 남은 파일이 새 세대로 통과해 이전 사용자의 사진이 새 상태에 새어들 수 있다 (핑퐁 R2)
+    var decodeGeneration = batchGeneration !== undefined ? batchGeneration : state.pageGeneration;
+    if (decodeGeneration !== state.pageGeneration) {
+      return false;
+    }
+    var bitmap = await createResizedBitmap(file);
+    if (decodeGeneration !== state.pageGeneration || state.pages.length >= 3) {
+      closePageBitmap({ bitmap: bitmap });
+      return false;
+    }
+    if (!state.pages.length) {
+      state.rotationRetried = false;
+      state.rotateWarned = false;
+    }
+    state.pages.push({ file: file, bitmap: bitmap, rotation: 0 });
+    hideConsentRequiredPanel();
+    renderPagePreviews();
+    updatePageSelection();
+    return true;
+  }
+
+  async function handleImageSelection(fileList, input) {
+    var files = Array.prototype.slice.call(fileList || []);
+    var availableCount = Math.max(3 - state.pages.length, 0);
+    var selectedFiles = files.slice(0, availableCount);
+    var addedCount = 0;
+    var batchGeneration = state.pageGeneration;
+
+    if (files.length > availableCount) {
+      showToast("사진은 최대 3장까지예요. 초과한 " + (files.length - availableCount) + "장은 담지 않았어요.");
+    }
+    for (var index = 0; index < selectedFiles.length; index += 1) {
+      if (state.pageGeneration !== batchGeneration) {
+        break;
+      }
+      try {
+        if (await selectImage(selectedFiles[index], batchGeneration)) {
+          addedCount += 1;
+        }
+      } catch (error) {
+        reportPipelineError("capture", error);
+        showToast(error.message || (index + 1) + "번째 사진을 준비하지 못했어요.");
+      }
+    }
+    input.value = "";
+    if (addedCount) {
+      byId("analysis-setup").scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }
+
+  function renderImageCanvas(page, canvas) {
+    if (!canvas || !page || !page.bitmap) {
       return;
     }
-    var sourceWidth = state.imageBitmap.width;
-    var sourceHeight = state.imageBitmap.height;
-    var quarterTurn = Math.abs(state.imageRotation % 180) === 90;
+    var sourceWidth = page.bitmap.width;
+    var sourceHeight = page.bitmap.height;
+    var quarterTurn = Math.abs(page.rotation % 180) === 90;
     var rotatedWidth = quarterTurn ? sourceHeight : sourceWidth;
     var rotatedHeight = quarterTurn ? sourceWidth : sourceHeight;
     var scale = Math.min(2000 / Math.max(rotatedWidth, rotatedHeight), 1); // 2000px = 서버 상한. 1600에선 작은 세모(△)를 놓침 (2026-08-23 실측)
     canvas.width = Math.max(1, Math.round(rotatedWidth * scale));
     canvas.height = Math.max(1, Math.round(rotatedHeight * scale));
-    canvas.hidden = false;
     var context = canvas.getContext("2d");
     context.save();
     context.fillStyle = "#fff";
     context.fillRect(0, 0, canvas.width, canvas.height);
     context.translate(canvas.width / 2, canvas.height / 2);
-    context.rotate(state.imageRotation * Math.PI / 180);
+    context.rotate(page.rotation * Math.PI / 180);
     context.drawImage(
-      state.imageBitmap,
+      page.bitmap,
       -sourceWidth * scale / 2,
       -sourceHeight * scale / 2,
       sourceWidth * scale,
@@ -692,30 +802,112 @@
     context.restore();
   }
 
-  function rotateImage(degrees) {
-    state.imageRotation = (state.imageRotation + degrees + 360) % 360;
-    renderImageCanvas();
+  function rotatePage(pageIndex, degrees) {
+    if (state.analysisInProgress || !state.pages[pageIndex]) {
+      return;
+    }
+    state.pages[pageIndex].rotation = (state.pages[pageIndex].rotation + degrees + 360) % 360;
+    renderPagePreviews();
   }
 
-  function preparedCanvasImage() {
+  function removePage(pageIndex) {
+    if (state.analysisInProgress || !state.pages[pageIndex]) {
+      return;
+    }
+    var removedPages = state.pages.splice(pageIndex, 1);
+    closePageBitmap(removedPages[0]);
+    if (!state.pages.length) {
+      state.rotationRetried = false;
+      state.rotateWarned = false;
+    }
+    byId("camera-input").value = "";
+    byId("gallery-input").value = "";
+    renderPagePreviews();
+    updatePageSelection();
+  }
+
+  function renderPagePreviews() {
+    var container = byId("page-previews");
+    var fragment = document.createDocumentFragment();
+    state.pages.forEach(function (page, pageIndex) {
+      var card = makeElement("article", "page-preview-card");
+      var heading = makeElement("div", "page-preview-heading");
+      var label = makeElement("strong", "", (pageIndex + 1) + "번째 장 · " + page.file.name);
+      var rotationLabel = makeElement("span", "", page.rotation + "°");
+      var canvas = makeElement("canvas", "image-canvas");
+      var actions = makeElement("div", "image-editor-actions");
+      var rotateLeft = makeButton("왼쪽 90°", "button button-secondary page-rotate-left", function () {
+        rotatePage(pageIndex, -90);
+      });
+      var rotateRight = makeButton("오른쪽 90°", "button button-secondary page-rotate-right", function () {
+        rotatePage(pageIndex, 90);
+      });
+      var remove = makeButton("이 장 빼기", "button button-secondary page-remove-button", function () {
+        removePage(pageIndex);
+      });
+
+      card.dataset.pageIndex = String(pageIndex);
+      canvas.setAttribute("aria-label", (pageIndex + 1) + "번째 시험지 미리보기");
+      rotateLeft.dataset.pageAction = "rotate-left";
+      rotateRight.dataset.pageAction = "rotate-right";
+      remove.dataset.pageAction = "remove";
+      rotateLeft.disabled = state.analysisInProgress;
+      rotateRight.disabled = state.analysisInProgress;
+      remove.disabled = state.analysisInProgress;
+      heading.append(label, rotationLabel);
+      actions.append(rotateLeft, rotateRight, remove);
+      card.append(heading, canvas, actions);
+      fragment.appendChild(card);
+      renderImageCanvas(page, canvas);
+    });
+    container.replaceChildren(fragment);
+  }
+
+  function canvasBlob(canvas, quality) {
     return new Promise(function (resolve, reject) {
-      renderImageCanvas();
-      byId("image-canvas").toBlob(function (blob) {
+      canvas.toBlob(function (blob) {
         if (!blob) {
           reject(new Error("이미지를 준비하지 못했습니다."));
           return;
         }
-        var reader = new FileReader();
-        reader.addEventListener("load", function () {
-          resolve({
-            base64: String(reader.result).split(",")[1],
-            mimeType: "image/jpeg"
-          });
-        });
-        reader.addEventListener("error", function () { reject(reader.error); });
-        reader.readAsDataURL(blob);
-      }, "image/jpeg", 0.85);
+        resolve(blob);
+      }, "image/jpeg", quality);
     });
+  }
+
+  function blobImage(blob) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.addEventListener("load", function () {
+        resolve({
+          base64: String(reader.result).split(",")[1],
+          mimeType: "image/jpeg"
+        });
+      });
+      reader.addEventListener("error", function () { reject(reader.error); });
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  async function preparedPageImage(page, pageIndex) {
+    var canvas = document.createElement("canvas");
+    renderImageCanvas(page, canvas);
+    var blob = await canvasBlob(canvas, 0.85);
+    if (blob.size > 1.9 * 1024 * 1024) {
+      blob = await canvasBlob(canvas, 0.7);
+    }
+    if (blob.size > 1.9 * 1024 * 1024) {
+      throw new Error((pageIndex + 1) + "번째 장 용량이 너무 커요. 사진을 다시 찍거나 해상도를 낮춰 주세요.");
+    }
+    return blobImage(blob);
+  }
+
+  async function preparedPageImages(pages) {
+    var images = [];
+    for (var pageIndex = 0; pageIndex < pages.length; pageIndex += 1) {
+      images.push(await preparedPageImage(pages[pageIndex], pageIndex));
+    }
+    return images;
   }
 
   function correctionDegrees(orientation) {
@@ -731,18 +923,50 @@
     return 0;
   }
 
+  function isCurrentAnalysisRequest(student, generation) {
+    return state.currentStudent && state.currentStudent.id === student.id &&
+      state.pageGeneration === generation && state.currentView === "capture";
+  }
+
+  function closeDeferredRequestPages(requestPages) {
+    var pagesToClose = [];
+    requestPages.concat(state.deferredPages).forEach(function (page) {
+      var stillSelected = state.pages.some(function (currentPage) {
+        return currentPage.bitmap === page.bitmap;
+      });
+      var alreadyQueued = pagesToClose.some(function (queuedPage) {
+        return queuedPage.bitmap === page.bitmap;
+      });
+      if (!stillSelected && !alreadyQueued) {
+        pagesToClose.push(page);
+      }
+    });
+    pagesToClose.forEach(closePageBitmap);
+    state.deferredPages = state.deferredPages.filter(function (page) {
+      return state.pages.some(function (currentPage) {
+        return currentPage.bitmap === page.bitmap;
+      });
+    });
+  }
+
   async function analyzeSelectedSheet() {
     var setup = byId("analysis-setup");
     var progress = byId("analysis-progress");
     var testId = byId("test-select").value;
-    var button = byId("analyze-button");
 
-    if (!state.selectedFile || !state.currentStudent) {
+    if (!state.pages.length || !state.currentStudent) {
       showToast("사진과 학생을 먼저 선택해 주세요.");
       return;
     }
 
-    button.disabled = true;
+    state.pageGeneration += 1;
+    var requestGeneration = state.pageGeneration;
+    var requestPages = state.pages.map(function (page) {
+      return { file: page.file, bitmap: page.bitmap, rotation: page.rotation };
+    });
+    state.analysisInProgress = true;
+    updatePageSelection();
+    renderPagePreviews();
     setup.hidden = true;
     progress.hidden = false;
     window.requestAnimationFrame(function () {
@@ -754,17 +978,39 @@
     var requestStudent = state.currentStudent;
 
     try {
-      var image = await preparedCanvasImage();
-      var analysis = await adapter.analyzeSheet(image, testId, requestStudent.id);
-      var rotation = correctionDegrees(analysis.orientation);
-      if (analysis.hint === "ROTATE" && rotation && !state.rotationRetried) {
-        state.rotationRetried = true;
-        rotateImage(rotation);
-        image = await preparedCanvasImage();
-        analysis = await adapter.analyzeSheet(image, testId, requestStudent.id);
-      }
-      if (!state.currentStudent || state.currentStudent.id !== requestStudent.id) {
+      var images = await preparedPageImages(requestPages);
+      if (!isCurrentAnalysisRequest(requestStudent, requestGeneration)) {
         return;
+      }
+      var analysis = await adapter.analyzeSheet(images, testId, requestStudent.id);
+      if (!isCurrentAnalysisRequest(requestStudent, requestGeneration)) {
+        return;
+      }
+      var rotation = correctionDegrees(analysis.orientation);
+      if (analysis.hint === "ROTATE" && rotation) {
+        if (requestPages.length === 1 && !state.rotationRetried) {
+          state.rotationRetried = true;
+          requestPages[0].rotation = (requestPages[0].rotation + rotation + 360) % 360;
+          if (state.pages[0] && state.pages[0].bitmap === requestPages[0].bitmap) {
+            state.pages[0].rotation = requestPages[0].rotation;
+          }
+          renderPagePreviews();
+          images = await preparedPageImages(requestPages);
+          if (!isCurrentAnalysisRequest(requestStudent, requestGeneration)) {
+            return;
+          }
+          analysis = await adapter.analyzeSheet(images, testId, requestStudent.id);
+          if (!isCurrentAnalysisRequest(requestStudent, requestGeneration)) {
+            return;
+          }
+        } else if (requestPages.length > 1 && !state.rotateWarned) {
+          state.rotateWarned = true;
+          setup.hidden = false;
+          progress.hidden = true;
+          progress.classList.remove("is-running");
+          showToast("사진 방향을 확인하고 회전 버튼으로 바로잡아 주세요");
+          return;
+        }
       }
       state.analysis = analysis;
       state.correctedHalfRule = !analysis.rules || analysis.rules.correctedHalfRule !== false;
@@ -780,7 +1026,7 @@
       renderAnalysis();
       await showView("analysis");
     } catch (error) {
-      if (!state.currentStudent || state.currentStudent.id !== requestStudent.id) {
+      if (!isCurrentAnalysisRequest(requestStudent, requestGeneration)) {
         return;
       }
       reportPipelineError("analyze", error);
@@ -793,7 +1039,10 @@
       }
       showToast(error.message || "판독하지 못했어요. 잠시 후 다시 시도해 주세요.");
     } finally {
-      button.disabled = false;
+      closeDeferredRequestPages(requestPages);
+      state.analysisInProgress = false;
+      updatePageSelection();
+      renderPagePreviews();
     }
   }
 
@@ -889,8 +1138,7 @@
     gate.appendChild(strong);
     byId("gate-card").replaceChildren(gate);
     byId("wrong-count").textContent = state.wrongItems.length + "개";
-    byId("save-score-button").disabled = !state.analysis;
-    byId("save-words-button").disabled = !state.analysis;
+    updateAnalysisSaveButtons();
   }
 
   function updateWrongItem(index, fieldName, value) {
@@ -1026,17 +1274,17 @@
       function () { saveAgain("new_attempt"); },
       function () { saveAgain("replace"); }
     );
-    byId(saveMode === "score" ? "save-score-button" : "save-words-button").disabled = true;
+    updateAnalysisSaveButtons();
   }
 
-  function clearCapturedSheet() {
-    state.selectedFile = null;
-    byId("camera-input").value = "";
-    byId("gallery-input").value = "";
+  function updateAnalysisSaveButtons() {
+    var unavailable = !state.analysis || state.saveInProgress;
+    byId("save-score-button").disabled = unavailable || !byId("duplicate-resolution").hidden;
+    byId("save-score-only-button").disabled = unavailable || !byId("score-duplicate-resolution").hidden;
   }
 
   async function finishAttemptSave(message, studentView) {
-    clearCapturedSheet();
+    clearPages();
     showToast(message);
     if (state.role === "teacher") {
       state.teacherStudentId = state.currentStudent.id;
@@ -1047,14 +1295,17 @@
   async function saveScore(onDuplicate) {
     var needsDeduction = state.analysis.expected === null;
     var deductionHalf = needsDeduction ? scoreDeductionHalf() : null;
-    var button = byId("save-score-button");
     byId("score-error").textContent = "";
     if (needsDeduction && byId("score-deduction").value.trim() && deductionHalf === null) {
       byId("score-error").textContent = "감점은 0.5점 단위로, 만점보다 작게 입력해 주세요.";
       byId("score-deduction").focus();
       return;
     }
-    button.disabled = true;
+    if (state.saveInProgress) {
+      return;
+    }
+    state.saveInProgress = true;
+    updateAnalysisSaveButtons();
     try {
       byId("score-duplicate-resolution").hidden = true;
       await adapter.saveAnalysis(
@@ -1073,9 +1324,8 @@
       showToast(error.message || "성적을 저장하지 못했어요.");
       return;
     } finally {
-      if (byId("score-duplicate-resolution").hidden) {
-        button.disabled = false;
-      }
+      state.saveInProgress = false;
+      updateAnalysisSaveButtons();
     }
     await finishAttemptSave("성적을 저장했어요.", "records");
   }
@@ -1086,16 +1336,19 @@
     var validWrongItems = state.wrongItems.filter(function (item) {
       return item.mark !== "unclear" && item.word.trim() && item.meaning.trim();
     });
-    var excludedCount = state.wrongItems.length - validWrongItems.length;
-    var button = byId("save-words-button");
 
+    byId("score-error").textContent = "";
     if (needsDeduction && byId("score-deduction").value.trim() && deductionHalf === null) {
       byId("score-error").textContent = "감점은 0.5점 단위로, 만점보다 작게 입력해 주세요.";
       byId("score-deduction").focus();
       return;
     }
 
-    button.disabled = true;
+    if (state.saveInProgress) {
+      return;
+    }
+    state.saveInProgress = true;
+    updateAnalysisSaveButtons();
     try {
       byId("duplicate-resolution").hidden = true;
       await adapter.saveAnalysis(
@@ -1114,13 +1367,13 @@
       showToast(error.message || "저장하지 못했어요.");
       return;
     } finally {
-      if (byId("duplicate-resolution").hidden) {
-        button.disabled = false;
-      }
+      state.saveInProgress = false;
+      updateAnalysisSaveButtons();
     }
     await finishAttemptSave(
-      "오답과 성적을 저장했어요." +
-        (excludedCount ? " 확인 안 된 " + excludedCount + "개는 담지 않았어요." : ""),
+      validWrongItems.length
+        ? "성적과 오답 단어 " + validWrongItems.length + "개를 저장했어요."
+        : "성적을 저장했어요. 담을 오답 단어가 없었어요.",
       "wordbook"
     );
   }
@@ -2423,6 +2676,9 @@
     });
     byId("logout-button").addEventListener("click", logout);
     byId("brand-home").addEventListener("click", function () {
+      if (state.currentView === "capture" || state.currentView === "analysis") {
+        clearPages();
+      }
       if (state.role === "student") {
         showView(adapter.isReal ? "wordbook" : "capture");
       } else if (state.role === "teacher") {
@@ -2430,10 +2686,10 @@
       }
     });
     byId("camera-input").addEventListener("change", function (event) {
-      handleImageSelection(event.target.files[0]);
+      handleImageSelection(event.target.files, event.target);
     });
     byId("gallery-input").addEventListener("change", function (event) {
-      handleImageSelection(event.target.files[0]);
+      handleImageSelection(event.target.files, event.target);
     });
     byId("analyze-button").addEventListener("click", analyzeSelectedSheet);
     byId("capture-student-select").addEventListener("change", function (event) {
@@ -2442,18 +2698,12 @@
       }) || null;
       state.teacherStudentId = state.currentStudent ? state.currentStudent.id : null;
     });
-    byId("rotate-left-button").addEventListener("click", function () { rotateImage(-90); });
-    byId("rotate-right-button").addEventListener("click", function () { rotateImage(90); });
     byId("retake-button").addEventListener("click", function () {
-      state.selectedFile = null;
-      // 같은 파일을 다시 골라도 change 이벤트가 나도록 입력값 초기화
-      byId("camera-input").value = "";
-      byId("gallery-input").value = "";
-      byId("selected-file").textContent = "";
+      clearPages();
       showView("capture");
     });
-    byId("save-score-button").addEventListener("click", function () { saveScore(); });
-    byId("save-words-button").addEventListener("click", function () { saveWords(); });
+    byId("save-score-button").addEventListener("click", function () { saveWords(); });
+    byId("save-score-only-button").addEventListener("click", function () { saveScore(); });
     byId("wordbook-filters").addEventListener("click", function (event) {
       var button = event.target.closest("button[data-filter]");
       if (!button) {
@@ -2465,6 +2715,10 @@
     byId("student-navigation").addEventListener("click", function (event) {
       var button = event.target.closest("button[data-view]");
       if (button) {
+        if ((state.currentView === "capture" && button.dataset.view !== "capture") ||
+            state.currentView === "analysis") {
+          clearPages();
+        }
         showView(button.dataset.view);
       }
     });
@@ -2485,10 +2739,7 @@
     });
     byId("teacher-capture-button").addEventListener("click", function () {
       state.currentStudent = null;
-      state.selectedFile = null;
-      byId("camera-input").value = "";
-      byId("gallery-input").value = "";
-      byId("selected-file").textContent = "";
+      clearPages();
       showView("capture");
     });
   }

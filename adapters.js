@@ -237,12 +237,23 @@
     return this.state.tests.find(function (item) { return item.id === testId; }) || null;
   };
 
+  function applyMockAnalyzeTestHook(analysis) {
+    // 브라우저 스모크가 지정한 횟수만 ROTATE를 돌려준다. 훅이 없으면 기존 응답 그대로다.
+    var rotateHintResponses = Number(MockAdapter.rotateHintResponses);
+    if (rotateHintResponses > 0) {
+      MockAdapter.rotateHintResponses = rotateHintResponses - 1;
+      analysis.hint = "ROTATE";
+      analysis.orientation = "rotated_cw";
+    }
+    return analysis;
+  }
+
   MockAdapter.prototype.analyzeSheet = function (_image, testId, studentId) {
     var test = this.findTest(testId);
     if (!testId) {
       return new Promise(function (resolve) {
         window.setTimeout(function () {
-          resolve({
+          resolve(applyMockAnalyzeTestHook({
             draftId: "mock-draft-" + Date.now(),
             testId: "mock-photo-test",
             test: {
@@ -277,7 +288,7 @@
             ],
             detectedDate: todayString(),
             orientation: "upright"
-          });
+          }));
         }, 350);
       });
     }
@@ -297,7 +308,7 @@
     var words = test ? test.words.slice(0, Math.max(total - score, 0)) : [];
     return new Promise(function (resolve) {
       window.setTimeout(function () {
-        resolve({
+        resolve(applyMockAnalyzeTestHook({
           draftId: "mock-draft-" + Date.now(),
           testId: testId,
           test: {
@@ -323,7 +334,7 @@
           }),
           detectedDate: todayString(),
           orientation: "upright"
-        });
+        }));
       }, 350);
     });
   };
