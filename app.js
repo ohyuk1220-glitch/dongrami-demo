@@ -1079,7 +1079,14 @@
     );
 
     container.replaceChildren(titleRow, meta, scoreLine);
-    byId("score-deduction-field").hidden = deduction !== null;
+    byId("score-deduction-field").hidden = false;
+    byId("score-deduction").value = deduction === null ? "" : String(deduction);
+    byId("score-deduction-label").textContent = deduction === null
+      ? "시험지에서 확인한 감점 (선택)"
+      : "인식한 감점";
+    byId("score-deduction-help").textContent = deduction === null
+      ? ""
+      : "인식이 틀렸으면 감점을 고쳐 주세요.";
   }
 
   function currentGateResult() {
@@ -1114,6 +1121,17 @@
     return deductionHalfFromInput("score-deduction");
   }
 
+  function recognizedDeductionHalf() {
+    return state.analysis.expected === null
+      ? null
+      : Math.round(Number(state.analysis.expected) * 2);
+  }
+
+  function scoreOverrideDeductionHalf() {
+    var inputHalf = scoreDeductionHalf();
+    return inputHalf !== null && inputHalf !== recognizedDeductionHalf() ? inputHalf : null;
+  }
+
   function renderGate() {
     var result = currentGateResult();
     var gate = makeElement("div", result.pass ? "gate" : "gate is-warning");
@@ -1136,6 +1154,15 @@
     }
 
     gate.appendChild(strong);
+    var inputHalf = scoreDeductionHalf();
+    if (
+      byId("score-deduction").value.trim() !== "" &&
+      inputHalf !== null &&
+      recognizedDeductionHalf() !== null &&
+      inputHalf !== recognizedDeductionHalf()
+    ) {
+      gate.appendChild(makeElement("span", "gate-info", "선생님이 고친 감점으로 저장돼요."));
+    }
     byId("gate-card").replaceChildren(gate);
     byId("wrong-count").textContent = state.wrongItems.length + "개";
     updateAnalysisSaveButtons();
@@ -1293,11 +1320,10 @@
   }
 
   async function saveScore(onDuplicate) {
-    var needsDeduction = state.analysis.expected === null;
-    var deductionHalf = needsDeduction ? scoreDeductionHalf() : null;
+    var deductionHalf = scoreOverrideDeductionHalf();
     byId("score-error").textContent = "";
-    if (needsDeduction && byId("score-deduction").value.trim() && deductionHalf === null) {
-      byId("score-error").textContent = "감점은 0.5점 단위로, 만점보다 작게 입력해 주세요.";
+    if (byId("score-deduction").value.trim() && scoreDeductionHalf() === null) {
+      byId("score-error").textContent = "감점은 0.5점 단위로, 0점부터 만점까지 입력해 주세요.";
       byId("score-deduction").focus();
       return;
     }
@@ -1331,15 +1357,14 @@
   }
 
   async function saveWords(onDuplicate) {
-    var needsDeduction = state.analysis.expected === null;
-    var deductionHalf = needsDeduction ? scoreDeductionHalf() : null;
+    var deductionHalf = scoreOverrideDeductionHalf();
     var validWrongItems = state.wrongItems.filter(function (item) {
       return item.mark !== "unclear" && item.word.trim() && item.meaning.trim();
     });
 
     byId("score-error").textContent = "";
-    if (needsDeduction && byId("score-deduction").value.trim() && deductionHalf === null) {
-      byId("score-error").textContent = "감점은 0.5점 단위로, 만점보다 작게 입력해 주세요.";
+    if (byId("score-deduction").value.trim() && scoreDeductionHalf() === null) {
+      byId("score-error").textContent = "감점은 0.5점 단위로, 0점부터 만점까지 입력해 주세요.";
       byId("score-deduction").focus();
       return;
     }
@@ -2329,6 +2354,7 @@
       return first.date.localeCompare(second.date);
     });
     var words = detailData[1];
+    var isOwner = Boolean(state.currentUser && state.currentUser.role === "owner");
     state.tests = detailData[2];
 
     var heading = makeElement("div", "detail-heading");
@@ -2623,7 +2649,11 @@
     var table = makeElement("table", "score-table");
     var thead = makeElement("thead");
     var headerRow = makeElement("tr");
-    ["날짜", "시험", "점수"].forEach(function (label) {
+    var historyLabels = ["날짜", "시험", "점수"];
+    if (isOwner) {
+      historyLabels.push("관리");
+    }
+    historyLabels.forEach(function (label) {
       headerRow.appendChild(makeElement("th", "", label));
     });
     thead.appendChild(headerRow);
@@ -2631,11 +2661,77 @@
     history.slice().reverse().forEach(function (record) {
       var row = makeElement("tr");
       var testName = getTestTitle(record.testId) + (record.attemptLabel ? " · " + record.attemptLabel : "");
+      var scoreCell = makeElement("td", "", record.score + "/" + record.total);
       row.append(
         makeElement("td", "", formatDate(record.date)),
         makeElement("td", "", testName),
-        makeElement("td", "", record.score + "/" + record.total)
+        scoreCell
       );
+      if (isOwner) {
+        var actionCell = makeElement("td", "score-edit-cell");
+        var editButton = makeButton("고치기", "text-button score-edit-button", function () {
+          var editor = makeElement("div", "score-edit");
+          var input = makeElement("input", "score-edit-input");
+          var preview = makeElement("span", "score-edit-preview");
+          var message = makeElement("span", "score-edit-message");
+          var actions = makeElement("div", "score-edit-actions");
+          var saveButton = makeButton("저장", "button button-primary", async function () {
+            var deduction = Number(input.value);
+            if (
+              input.value.trim() === "" || !Number.isFinite(deduction) || deduction < 0 ||
+              deduction > record.total || Math.round(deduction * 2) / 2 !== deduction
+            ) {
+              message.textContent = "감점은 0점부터 만점까지 0.5점 단위로 입력해 주세요.";
+              input.focus();
+              return;
+            }
+            message.textContent = "";
+            saveButton.disabled = true;
+            try {
+              await adapter.correctAttemptScore(record.id, Math.round(deduction * 2));
+            } catch (error) {
+              message.textContent = error.message || "성적을 고치지 못했어요.";
+              saveButton.disabled = false;
+              return;
+            }
+            showToast("성적을 고쳤어요.");
+            try {
+              await renderTeacherDetail();
+            } catch (error) {
+              showToast("고친 점수는 저장됐어요. 화면을 새로 열면 반영돼 있어요.");
+            }
+          });
+          var cancelButton = makeButton("취소", "button button-secondary", function () {
+            actionCell.replaceChildren(editButton);
+          });
+
+          function updateScorePreview() {
+            var deduction = Number(input.value);
+            var valid = input.value.trim() !== "" && Number.isFinite(deduction) && deduction >= 0 &&
+              deduction <= record.total && Math.round(deduction * 2) / 2 === deduction;
+            preview.textContent = valid ? "→ " + (record.total - deduction) + "/" + record.total : "";
+            message.textContent = "";
+          }
+
+          input.type = "number";
+          input.min = "0";
+          input.max = String(record.total);
+          input.step = "0.5";
+          input.inputMode = "decimal";
+          input.value = String(record.total - record.score);
+          input.setAttribute("aria-label", "감점");
+          input.addEventListener("input", updateScorePreview);
+          message.setAttribute("role", "status");
+          actions.append(saveButton, cancelButton);
+          editor.append(makeElement("span", "score-edit-label", "감점"), input, preview, actions, message);
+          actionCell.replaceChildren(editor);
+          updateScorePreview();
+          input.focus();
+          input.select();
+        });
+        actionCell.appendChild(editButton);
+        row.appendChild(actionCell);
+      }
       tbody.appendChild(row);
     });
     table.append(thead, tbody);
@@ -2701,6 +2797,10 @@
     byId("retake-button").addEventListener("click", function () {
       clearPages();
       showView("capture");
+    });
+    byId("score-deduction").addEventListener("input", function () {
+      byId("score-error").textContent = "";
+      renderGate();
     });
     byId("save-score-button").addEventListener("click", function () { saveWords(); });
     byId("save-score-only-button").addEventListener("click", function () { saveScore(); });

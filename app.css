@@ -1286,6 +1286,15 @@ code {
   max-width: 150px;
 }
 
+.score-deduction-help {
+  color: var(--ink-soft);
+  font-size: .79rem;
+}
+
+.score-deduction-help:empty {
+  display: none;
+}
+
 .score-caution,
 .score-error {
   margin: 10px 0;
@@ -2574,6 +2583,51 @@ code {
 
 .score-table tr:last-child td {
   border-bottom: 0;
+}
+
+.score-edit-cell {
+  min-width: 250px;
+}
+
+.score-edit {
+  display: grid;
+  grid-template-columns: auto minmax(72px, 100px) auto;
+  align-items: center;
+  gap: 6px 8px;
+}
+
+.score-edit-label,
+.score-edit-preview {
+  white-space: nowrap;
+}
+
+.score-edit-input {
+  min-width: 0;
+}
+
+.score-edit-actions,
+.score-edit-message {
+  grid-column: 1 / -1;
+}
+
+.score-edit-actions {
+  display: flex;
+  gap: 7px;
+}
+
+.score-edit-actions .button {
+  min-height: 36px;
+  padding: 7px 12px;
+  font-size: .78rem;
+}
+
+.score-edit-message {
+  color: var(--pen-red);
+  font-size: .76rem;
+}
+
+.score-edit-message:empty {
+  display: none;
 }
 
 .bottom-nav {

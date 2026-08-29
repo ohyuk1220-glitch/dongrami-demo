@@ -66,6 +66,7 @@
     "getRetestQuiz",
     "saveAnalysis",
     "saveManualAttempt",
+    "correctAttemptScore",
     "saveRetestResult",
     "registerTest",
     "createStudent",
@@ -342,6 +343,9 @@
   MockAdapter.prototype.saveAnalysis = function (studentId, analysis, wrongItems, _overrideReason, options) {
     var currentWords = this.state.wordbooks[studentId] || [];
     var now = analysis.detectedDate || todayString();
+    var deductionHalf = options && Number.isInteger(options.deductionHalf)
+      ? options.deductionHalf
+      : Math.round((analysis.total - analysis.score) * 2);
     if (!options || options.scoreOnly !== true) {
       wrongItems.forEach(function (item, index) {
         var existing = currentWords.find(function (word) {
@@ -367,15 +371,17 @@
     }
     this.state.wordbooks[studentId] = currentWords;
     this.state.histories[studentId] = this.state.histories[studentId] || [];
-    this.state.histories[studentId].push({
+    var record = {
       id: "history-" + Date.now(),
       testId: analysis.testId,
-      score: analysis.score,
+      score: analysis.total - deductionHalf / 2,
       total: analysis.total,
-      date: now
-    });
+      date: now,
+      deductionHalf: deductionHalf
+    };
+    this.state.histories[studentId].push(record);
     this.persist();
-    return resolved({ attempt: clone(analysis), wordbook: clone(currentWords) });
+    return resolved({ attempt: clone(record), wordbook: clone(currentWords) });
   };
 
   MockAdapter.prototype.saveManualAttempt = function (studentId, input) {
@@ -422,6 +428,27 @@
     this.state.histories[studentId] = history;
     this.persist();
     return resolved({ attempt: clone(record) });
+  };
+
+  MockAdapter.prototype.correctAttemptScore = function (attemptId, deductionHalf) {
+    var record = null;
+    Object.keys(this.state.histories).some(function (studentId) {
+      record = this.state.histories[studentId].find(function (item) { return item.id === attemptId; }) || null;
+      return Boolean(record);
+    }, this);
+    if (!record || !Number.isInteger(deductionHalf) || deductionHalf < 0 || deductionHalf > record.total * 2) {
+      return Promise.reject(new Error("감점을 확인해 주세요."));
+    }
+    record.deductionHalf = deductionHalf;
+    record.score = record.total - deductionHalf / 2;
+    record.gateStatus = "manual";
+    this.persist();
+    return resolved({
+      id: record.id,
+      deductionHalf: deductionHalf,
+      score: record.score,
+      total: record.total
+    });
   };
 
   MockAdapter.prototype.saveRetestResult = function (studentId, results) {
@@ -761,6 +788,13 @@
         clientRequestId: input.clientRequestId,
         onDuplicate: input.onDuplicate || undefined
       }
+    });
+  };
+
+  RealAdapter.prototype.correctAttemptScore = function (attemptId, deductionHalf) {
+    return this.request("/attempts/" + encodeURIComponent(attemptId) + "/score", {
+      method: "PATCH",
+      body: { deductionHalf: deductionHalf }
     });
   };
 
